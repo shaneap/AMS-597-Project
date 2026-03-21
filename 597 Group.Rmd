@@ -1,0 +1,9 @@
+title: "AMS 597 Project"
+date: 2026-03-05
+output: pdf_document
+
+
+``` {r}
+data = read.csv("./US_Accidents_March23.csv")
+head(data)
+```
