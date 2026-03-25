@@ -1,0 +1,36 @@
+---
+title: "AMS 597 Project"
+date: 2026-03-05
+author: Shane Patandin, Matthew Tranquada, Vraj Patel, Kaushal Patel, Sur Vaghasiya
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(reticulate) # allows us to use Python in .Rmd file
+# reticulate::virtualenv_create("597_env") # only need to create once
+use_virtualenv("597_env", required = TRUE) # specifying which venv for python libs
+```
+
+# R Code
+
+``` {r}
+# data = read.csv("./US_Accidents_March23.csv")
+# head(data)
+```
+
+
+# Python Code
+
+```{python}
+import pandas as pd
+import numpy as np
+import torch
+```
+
+```{python}
+df = pd.read_csv("./US_Accidents_March23.csv")
+df.head()
+```
+
+
