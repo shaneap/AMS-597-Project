@@ -1,0 +1,21 @@
+---
+title: "AMS 597 Project"
+date: 2026-03-05
+author: Shane Patandin, Matthew Tranquada, Vraj Patel, Kaushal Patel, Sur Vaghasiya
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# R Code
+
+``` {r}
+data = read.csv("./US_Accidents_March23.csv")
+head(data)
+```
+
+
+
+
