@@ -16,6 +16,29 @@ data = read.csv("./US_Accidents_March23.csv")
 head(data)
 ```
 
+```{r}
+data = fread("./US_Accidents_March23.csv")
+head(data)
+str(data)
+
+length(data$Zipcode[data$Zipcode == "11790"])
+```
+# Long Island ZIP Code Filtering
+```{r}
+data$nzip = as.numeric(data$Zipcode)
+
+li.data = data.frame(subset(data, (nzip >= 11000 & nzip < 11100) | 
+                    (nzip >= 11500 & nzip < 11600) | 
+                    (nzip >= 11700 & nzip < 12000)))
+```
+
+
+
+
+
+
+
+
 
 
 
