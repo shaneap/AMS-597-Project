@@ -1,0 +1,449 @@
+---
+title: "Long Island Accident Data Cleaning Walkthrough"
+author: "Vraj Patel"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(data.table)
+library(knitr)
+
+mode_value <- function(x) {
+  observed <- x[!is.na(x)]
+  if (!length(observed)) {
+    return(NA)
+  }
+
+  counts <- sort(table(observed), decreasing = TRUE)
+  names(counts)[1]
+}
+
+median_datetime <- function(x, tz = "UTC") {
+  observed <- x[!is.na(x)]
+  if (!length(observed)) {
+    return(as.POSIXct(NA))
+  }
+
+  as.POSIXct(median(as.numeric(observed)), origin = "1970-01-01", tz = tz)
+}
+
+missing_rate <- function(dt) {
+  data.table(
+    column = names(dt),
+    missing_rate = vapply(dt, function(x) mean(is.na(x)), numeric(1))
+  )[order(-missing_rate, column)]
+}
+
+row_audit <- data.table(
+  step = character(),
+  rows_before = integer(),
+  rows_after = integer(),
+  rows_removed = integer(),
+  notes = character()
+)
+
+data_path <- "US_Accidents_March23.csv"
+clean_path <- "li_accidents_clean.csv"
+audit_path <- "li_cleaning_audit.csv"
+decision_path <- "li_cleaning_decisions.csv"
+```
+
+This report keeps the raw national file unchanged, applies the Long Island ZIP filter, and then cleans the subset in clear, reproducible steps. The final shared dataset is written to `li_accidents_clean.csv`.
+
+# Step 1: Raw data and Long Island ZIP filter
+
+```{r read-raw-data}
+raw_data <- fread(data_path, showProgress = FALSE)
+
+original_rows <- nrow(raw_data)
+original_cols <- ncol(raw_data)
+
+row_audit <- rbind(
+  row_audit,
+  data.table(
+    step = "Raw national file",
+    rows_before = original_rows,
+    rows_after = original_rows,
+    rows_removed = 0L,
+    notes = "Original March 2023 US accidents file."
+  )
+)
+
+raw_overview <- data.table(
+  metric = c("Rows", "Columns"),
+  value = c(original_rows, original_cols)
+)
+
+kable(raw_overview, caption = "Raw dataset overview")
+```
+
+```{r filter-long-island-zips}
+raw_data[, nzip := suppressWarnings(as.numeric(Zipcode))]
+
+li_data <- raw_data[
+  (nzip >= 11000 & nzip < 11100) |
+    (nzip >= 11500 & nzip < 11600) |
+    (nzip >= 11700 & nzip < 12000)
+]
+
+row_audit <- rbind(
+  row_audit,
+  data.table(
+    step = "Long Island ZIP filter",
+    rows_before = original_rows,
+    rows_after = nrow(li_data),
+    rows_removed = original_rows - nrow(li_data),
+    notes = "Kept ZIP codes in the requested 110xx, 115xx, and 117xx-119xx ranges."
+  )
+)
+
+filter_counts <- row_audit[step %in% c("Raw national file", "Long Island ZIP filter"),
+                           .(step, rows_after, rows_removed, notes)]
+kable(filter_counts, caption = "Row counts before and after the geographic filter")
+```
+
+```{r validate-geographic-filter}
+zip_spotcheck <- li_data[!is.na(nzip), .N, by = .(Zipcode, nzip)][order(nzip)]
+zip_spotcheck <- zip_spotcheck[c(1, 2, 3, .N - 2, .N - 1, .N)]
+
+county_validation <- li_data[, .N, by = County][order(-N)]
+outside_primary_counties <- li_data[
+  !(County %in% c("Nassau", "Suffolk")),
+  .N,
+  by = .(County, Zipcode)
+][order(County, Zipcode)]
+
+if (!nrow(outside_primary_counties)) {
+  outside_primary_counties <- data.table(
+    County = "None",
+    Zipcode = "None",
+    N = 0L
+  )
+}
+
+kable(zip_spotcheck, caption = "ZIP spot-check from the filtered subset")
+kable(county_validation, caption = "County distribution after the ZIP filter")
+kable(outside_primary_counties, caption = "Rows outside Nassau/Suffolk after ZIP filtering")
+```
+
+The requested ZIP filter works and produces a Long Island-focused subset. The check after filtering shows that most of the records are from Nassau and Suffolk, with a small number from Queens because some border ZIP codes fall in the same range. That result is documented instead of being changed silently.
+
+\newpage
+
+# Step 2: Conservative cleaning pipeline
+
+```{r remove-exact-duplicates}
+rm(raw_data)
+invisible(gc())
+
+clean_data <- copy(li_data)
+rm(li_data)
+invisible(gc())
+
+before_duplicates <- nrow(clean_data)
+clean_data <- unique(clean_data)
+after_duplicates <- nrow(clean_data)
+
+row_audit <- rbind(
+  row_audit,
+  data.table(
+    step = "Remove exact duplicates",
+    rows_before = before_duplicates,
+    rows_after = after_duplicates,
+    rows_removed = before_duplicates - after_duplicates,
+    notes = "Removed only full-row duplicates."
+  )
+)
+
+kable(row_audit[step == "Remove exact duplicates", .(step, rows_before, rows_after, rows_removed)],
+      caption = "Exact duplicate removal")
+```
+
+```{r drop-high-missing-columns}
+before_high_missing <- nrow(clean_data)
+initial_missing_profile <- missing_rate(clean_data)
+high_missing_cols <- initial_missing_profile[missing_rate > 0.70, column]
+
+if (length(high_missing_cols)) {
+  clean_data <- clean_data[, !..high_missing_cols]
+}
+
+removed_high_missing <- if (length(high_missing_cols)) {
+  data.table(column = high_missing_cols, action = "Dropped (>70% missing)")
+} else {
+  data.table(column = "None", action = "No columns exceeded the 70% missingness threshold")
+}
+
+row_audit <- rbind(
+  row_audit,
+  data.table(
+    step = "Drop >70% missing columns",
+    rows_before = before_high_missing,
+    rows_after = nrow(clean_data),
+    rows_removed = 0L,
+    notes = paste("Columns removed:", if (length(high_missing_cols)) paste(high_missing_cols, collapse = ", ") else "none")
+  )
+)
+
+kable(removed_high_missing, caption = "High-missing columns assessment")
+```
+
+```{r handle-missing-values}
+critical_columns <- intersect(
+  c("ID", "Severity", "Start_Time", "End_Time", "Start_Lat", "Start_Lng",
+    "Street", "City", "County", "State", "Zipcode", "Timezone"),
+  names(clean_data)
+)
+
+supplementary_columns <- setdiff(names(clean_data), critical_columns)
+missing_profile <- missing_rate(clean_data)
+
+imputation_log <- data.table(
+  column = character(),
+  missing_before = integer(),
+  fill_method = character(),
+  fill_value = character()
+)
+
+for (column_name in critical_columns) {
+  missing_before <- sum(is.na(clean_data[[column_name]]))
+  if (!missing_before) {
+    next
+  }
+
+  column_data <- clean_data[[column_name]]
+
+  if (inherits(column_data, "POSIXct")) {
+    fill_value <- median_datetime(column_data)
+    fill_method <- "Median datetime"
+  } else if (is.numeric(column_data) || is.integer(column_data)) {
+    fill_value <- median(column_data, na.rm = TRUE)
+    fill_method <- "Median"
+  } else {
+    fill_value <- mode_value(column_data)
+    fill_method <- "Mode"
+  }
+
+  clean_data[is.na(get(column_name)), (column_name) := fill_value]
+
+  imputation_log <- rbind(
+    imputation_log,
+    data.table(
+      column = column_name,
+      missing_before = missing_before,
+      fill_method = fill_method,
+      fill_value = as.character(fill_value)
+    )
+  )
+}
+
+if (!nrow(imputation_log)) {
+  imputation_log <- data.table(
+    column = "None",
+    missing_before = 0L,
+    fill_method = "No critical imputations needed",
+    fill_value = "Critical fields were complete after filtering"
+  )
+}
+
+missing_profile <- missing_rate(clean_data)
+low_missing_supp_cols <- missing_profile[
+  column %in% supplementary_columns & missing_rate > 0 & missing_rate < 0.05,
+  column
+]
+
+before_low_missing_drop <- nrow(clean_data)
+if (length(low_missing_supp_cols)) {
+  clean_data <- clean_data[complete.cases(clean_data[, ..low_missing_supp_cols])]
+}
+after_low_missing_drop <- nrow(clean_data)
+
+flagged_columns <- missing_rate(clean_data)[
+  column %in% supplementary_columns & missing_rate >= 0.05,
+  .(column, missing_rate, action = "Retained and documented")
+]
+
+if (!nrow(flagged_columns)) {
+  flagged_columns <- data.table(
+    column = "None",
+    missing_rate = 0,
+    action = "No supplementary columns required flagging"
+  )
+}
+
+row_audit <- rbind(
+  row_audit,
+  data.table(
+    step = "Handle missing values",
+    rows_before = before_low_missing_drop,
+    rows_after = after_low_missing_drop,
+    rows_removed = before_low_missing_drop - after_low_missing_drop,
+    notes = paste(
+      "Critical fields imputed when needed;",
+      if (length(low_missing_supp_cols)) {
+        paste("dropped rows missing:", paste(low_missing_supp_cols, collapse = ", "))
+      } else {
+        "no low-missing supplementary row drops were needed"
+      }
+    )
+  )
+)
+
+kable(imputation_log, caption = "Critical-field imputation log")
+kable(
+  data.table(column = if (length(low_missing_supp_cols)) low_missing_supp_cols else "None"),
+  caption = "Supplementary columns that triggered row drops (<5% missing)"
+)
+kable(flagged_columns, caption = "Supplementary columns retained with documented higher missingness")
+```
+
+```{r standardize-types}
+before_type_standardization <- nrow(clean_data)
+
+clean_data[, nzip := as.integer(nzip)]
+clean_data[, Severity := factor(as.integer(Severity), levels = 1:4, ordered = TRUE)]
+
+time_columns <- intersect(c("Start_Time", "End_Time", "Weather_Timestamp"), names(clean_data))
+for (column_name in time_columns) {
+  parsed_time <- as.POSIXct(clean_data[[column_name]], format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  set(clean_data, j = column_name, value = parsed_time)
+}
+
+clean_data[, Duration_Minutes := as.numeric(difftime(End_Time, Start_Time, units = "mins"))]
+
+row_audit <- rbind(
+  row_audit,
+  data.table(
+    step = "Standardize data types",
+    rows_before = before_type_standardization,
+    rows_after = nrow(clean_data),
+    rows_removed = 0L,
+    notes = "Parsed date/time fields, kept numeric ZIP in nzip, and converted Severity to an ordered factor."
+  )
+)
+
+type_summary <- data.table(
+  field = c("nzip", "Severity", "Start_Time", "End_Time", "Weather_Timestamp", "Duration_Minutes"),
+  type_after_cleaning = c(
+    class(clean_data$nzip)[1],
+    class(clean_data$Severity)[1],
+    class(clean_data$Start_Time)[1],
+    class(clean_data$End_Time)[1],
+    class(clean_data$Weather_Timestamp)[1],
+    class(clean_data$Duration_Minutes)[1]
+  )
+)
+
+kable(type_summary, caption = "Key standardized variable types")
+```
+
+```{r remove-implausible-values}
+before_implausible_filter <- nrow(clean_data)
+
+implausible_checks <- data.table(
+  check = c(
+    "Severity outside 1-4",
+    "Negative duration",
+    "Negative distance",
+    "Start latitude outside [-90, 90]",
+    "Start longitude outside [-180, 180]",
+    "End latitude outside [-90, 90]",
+    "End longitude outside [-180, 180]"
+  ),
+  failures = c(
+    sum(!(as.integer(clean_data$Severity) %in% 1:4)),
+    sum(!is.na(clean_data$Duration_Minutes) & clean_data$Duration_Minutes < 0),
+    sum(!is.na(clean_data[["Distance(mi)"]]) & clean_data[["Distance(mi)"]] < 0),
+    sum(clean_data$Start_Lat < -90 | clean_data$Start_Lat > 90, na.rm = TRUE),
+    sum(clean_data$Start_Lng < -180 | clean_data$Start_Lng > 180, na.rm = TRUE),
+    sum(!is.na(clean_data$End_Lat) & (clean_data$End_Lat < -90 | clean_data$End_Lat > 90)),
+    sum(!is.na(clean_data$End_Lng) & (clean_data$End_Lng < -180 | clean_data$End_Lng > 180))
+  )
+)
+
+clean_data <- clean_data[
+  as.integer(Severity) %in% 1:4 &
+    (is.na(Duration_Minutes) | Duration_Minutes >= 0) &
+    (is.na(`Distance(mi)`) | `Distance(mi)` >= 0) &
+    between(Start_Lat, -90, 90) &
+    between(Start_Lng, -180, 180) &
+    (is.na(End_Lat) | between(End_Lat, -90, 90)) &
+    (is.na(End_Lng) | between(End_Lng, -180, 180))
+]
+
+after_implausible_filter <- nrow(clean_data)
+
+row_audit <- rbind(
+  row_audit,
+  data.table(
+    step = "Remove implausible values",
+    rows_before = before_implausible_filter,
+    rows_after = after_implausible_filter,
+    rows_removed = before_implausible_filter - after_implausible_filter,
+    notes = "Removed records only when values were logically impossible."
+  )
+)
+
+kable(implausible_checks, caption = "Implausible-value checks")
+```
+
+\newpage
+
+# Step 3: Outputs and documentation
+
+```{r export-clean-data}
+export_data <- copy(clean_data)
+export_data[, Severity := as.integer(as.character(Severity))]
+
+for (column_name in time_columns) {
+  formatted_time <- format(export_data[[column_name]], "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  formatted_time[is.na(export_data[[column_name]])] <- NA_character_
+  set(export_data, j = column_name, value = formatted_time)
+}
+
+fwrite(export_data, clean_path)
+
+final_summary <- data.table(
+  metric = c("Final cleaned rows", "Final cleaned columns", "Output file"),
+  value = c(nrow(export_data), ncol(export_data), clean_path)
+)
+
+kable(final_summary, caption = "Cleaned dataset written for team use")
+```
+
+```{r cleaning-summary}
+summary_table <- copy(row_audit)
+summary_table[, final_dataset_rows := nrow(export_data)]
+
+decision_log <- data.table(
+  decision = c(
+    "Geographic scope",
+    "Duplicate handling",
+    "High-missing columns",
+    "Critical missingness",
+    "Low-missing supplementary fields",
+    "Higher-missing supplementary fields",
+    "Implausible values"
+  ),
+  rationale = c(
+    "Applied the requested ZIP ranges and checked the results with ZIP and county counts.",
+    "Removed only exact duplicate rows so different accident records were not merged by mistake.",
+    "Used a >70% missingness threshold, and no columns crossed it in the Long Island subset.",
+    "Set up the report to fill in critical fields if needed, but none were missing after filtering.",
+    "Dropped rows only when a supplementary field had very little missing data and removing those rows was reasonable.",
+    "Kept End_Lat, End_Lng, Precipitation(in), and Wind_Chill(F) because they may still be useful even with missing values.",
+    "Removed rows only when values were clearly impossible, such as negative duration or invalid coordinates."
+  )
+)
+
+fwrite(summary_table, audit_path)
+fwrite(decision_log, decision_path)
+
+kable(summary_table, caption = "Row-count audit trail")
+kable(decision_log, caption = "Plain-language rationale for each cleaning decision")
+```
+
+The final cleaned file is ready for shared use across the research questions. The raw CSV stays unchanged, the workflow stays reproducible from this single R Markdown file, and the validation shows clearly what was cleaned and what was kept.
