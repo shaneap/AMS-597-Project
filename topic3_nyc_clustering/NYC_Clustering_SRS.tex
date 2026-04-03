@@ -1,0 +1,755 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{longtable}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.7em}
+
+\title{Software Requirements Specification\\NYC Traffic Accident Cluster Discovery System in R}
+\author{AMS 597 Project Team}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Purpose}
+
+This project proposes an R-based analytical system that discovers meaningful patterns in New York City traffic accidents using clustering techniques. The system is not designed as a purely descriptive dashboard and it is not primarily a supervised prediction system. Its purpose is to discover latent accident patterns, accident scenario groups, and geographic hotspot structures that are not obvious from simple count tables.
+
+The project is restricted to New York City only in order to keep the scope focused, produce a more original analysis, and make the final report easier to defend academically.
+
+\section{Problem Statement}
+
+The NYC accident data contains mixed variable types:
+
+\begin{itemize}
+\item numeric variables such as temperature, visibility, wind speed, and pressure
+\item categorical variables such as weather condition and day versus night
+\item binary roadway context variables such as \texttt{Crossing}, \texttt{Junction}, and \texttt{Traffic\_Signal}
+\item temporal information derivable from timestamps such as hour band, weekday, season, and rush-hour status
+\end{itemize}
+
+Because of this structure, the main research problem is:
+
+\textit{How can we discover interpretable and stable groups of NYC accidents using clustering in R while respecting the mixed-type nature of the data and the size of the dataset?}
+
+\section{Why NYC Only}
+
+Restricting the work to NYC is methodologically useful for four reasons:
+
+\begin{itemize}
+\item the city-specific scope reduces plagiarism risk because the project becomes more focused and less generic
+\item the setting is geographically coherent
+\item borough-level interpretation is meaningful
+\item the dataset is still large enough to support serious analysis
+\end{itemize}
+
+The NYC subset contains \textbf{117,817} accident records. In this dataset, NYC is defined by the five borough counties:
+
+\begin{center}
+\begin{tabular}{|l|r|}
+\hline
+Borough County & Rows \\
+\hline
+Bronx & 27,308 \\
+Kings (Brooklyn) & 21,234 \\
+New York (Manhattan) & 21,989 \\
+Queens & 41,480 \\
+Richmond (Staten Island) & 5,806 \\
+\hline
+\end{tabular}
+\end{center}
+
+\section{Dataset Profile Relevant to Clustering}
+
+The NYC subset has enough variation to support clustering and enough volume to justify a substantial project.
+
+\subsection{Size and Severity Distribution}
+
+\begin{itemize}
+\item Total rows: 117,817
+\item Severity 1: 65
+\item Severity 2: 85,847
+\item Severity 3: 29,550
+\item Severity 4: 2,355
+\end{itemize}
+
+This severity imbalance is important. It means severity should \textbf{not} be used as a clustering input variable if the goal is to interpret severity \textit{after} the clusters are formed.
+
+\subsection{Useful Variables for Pattern Discovery}
+
+The dataset contains repeated roadway and environmental conditions that are appropriate for cluster discovery.
+
+\begin{itemize}
+\item \texttt{Crossing = TRUE} for about 21.83\% of rows
+\item \texttt{Traffic\_Signal = TRUE} for about 20.02\% of rows
+\item \texttt{Junction = TRUE} for about 16.76\% of rows
+\item \texttt{Stop = TRUE} for about 5.39\% of rows
+\item \texttt{Railway = TRUE} for about 2.44\% of rows
+\item highest accident hours include 06, 07, 08, 14, 15, 16, and 17
+\item common weather groups include Fair, Mostly Cloudy, Cloudy, Partly Cloudy, and Light Rain
+\end{itemize}
+
+\subsection{Missingness}
+
+The most important missing-data observations are:
+
+\begin{itemize}
+\item \texttt{Weather\_Condition}: about 1.03\% missing
+\item \texttt{Temperature(F)}: about 0.69\% missing
+\item \texttt{Humidity(\%)}: about 0.69\% missing
+\item \texttt{Pressure(in)}: about 1.65\% missing
+\item \texttt{Visibility(mi)}: about 1.18\% missing
+\item \texttt{Wind\_Speed(mph)}: about 6.19\% missing
+\item \texttt{Precipitation(in)}: about 23.87\% missing
+\end{itemize}
+
+Implication:
+
+\begin{itemize}
+\item \texttt{Precipitation(in)} should not be a core clustering feature unless there is a clear imputation strategy
+\item moderate-missing numeric variables can be retained if the clustering method supports missing data appropriately
+\end{itemize}
+
+\section{Research-Backed Method Selection}
+
+This is the core methodological section of the project.
+
+\subsection{Why Plain k-Means Should Not Be the Main Method}
+
+The standard R implementation of \texttt{kmeans()} expects numeric input. Our NYC accident data is not naturally numeric-only. It includes factors, binaries, time-derived categories, and mixed roadway conditions.
+
+Therefore:
+
+\begin{itemize}
+\item plain k-means is not the best primary method for the full research workflow
+\item forcing all variables into crude numeric codes would damage interpretability
+\item k-means can still be used later as a reduced numeric-only comparison, but not as the main solution
+\end{itemize}
+
+\subsection{Why Full Gower Plus Hierarchical Clustering or PAM Is Not the Main Method}
+
+The function \texttt{cluster::daisy()} is attractive because it supports mixed variable types through Gower-style dissimilarities. However, using full pairwise dissimilarities at NYC scale is not practical.
+
+For 117,817 rows:
+
+\begin{itemize}
+\item pairwise distances = 6,940,363,836
+\item storing the distance matrix as doubles alone would require about 51.71 GiB
+\end{itemize}
+
+Therefore:
+
+\begin{itemize}
+\item full \texttt{daisy()} plus \texttt{agnes()} or \texttt{pam()} on all NYC observations is not recommended as the primary workflow
+\item this strategy may be used only on a sample for sensitivity analysis
+\end{itemize}
+
+\subsection{Why CLARA Is Not the Best Primary Method}
+
+\texttt{cluster::clara()} is designed for large applications, which is an advantage. However, its documented input expects numeric or logical data. For this project, that means the mixed categorical structure would need extra encoding before clustering.
+
+Therefore:
+
+\begin{itemize}
+\item CLARA is a reasonable fallback for a numeric or dummy-encoded workflow
+\item it is not the cleanest primary method for mixed accident records
+\end{itemize}
+
+\subsection{Recommended Primary Method: k-Prototypes}
+
+The recommended primary method is \texttt{clustMixType::kproto()}.
+
+Reasons:
+
+\begin{itemize}
+\item it is designed for mixed-type data
+\item it accepts numeric and factor variables together
+\item it supports \texttt{type = "gower"}, which range-normalizes numeric distances
+\item the package ecosystem supports validation and cluster stability analysis
+\item the associated R Journal paper explicitly argues that all-pairs mixed-distance approaches are not feasible for large datasets, whereas k-prototypes scales linearly in the number of observations
+\end{itemize}
+
+\subsection{Recommended Secondary Method: DBSCAN}
+
+The recommended secondary method is \texttt{dbscan::dbscan()} for spatial hotspot discovery.
+
+Reasons:
+
+\begin{itemize}
+\item accident hotspots often follow irregular road corridors and interchange shapes
+\item DBSCAN is designed for dense regions with arbitrary shape
+\item DBSCAN naturally labels sparse points as noise
+\end{itemize}
+
+\subsection{Final Method Decision}
+
+The best overall project design is a two-layer clustering system:
+
+\begin{enumerate}
+\item \textbf{Scenario clustering}: use \texttt{kproto(type = "gower")} on mixed contextual variables
+\item \textbf{Spatial clustering}: use \texttt{dbscan()} on projected coordinates
+\end{enumerate}
+
+This is better than trying to force a single algorithm to answer every question.
+
+\section{Recommended Research Framing}
+
+The strongest topic statement is:
+
+\textit{Cluster-Based Discovery of Accident Scenarios and Spatial Hotspots in New York City Using R}
+
+Recommended research questions:
+
+\begin{itemize}
+\item What latent accident scenario clusters exist in NYC when accidents are grouped by time, weather, and roadway context?
+\item How do these clusters differ across boroughs?
+\item Which discovered clusters contain a higher share of severe accidents?
+\item Where are the densest accident hotspot corridors in NYC?
+\item Do the hotspot areas correspond to particular scenario clusters?
+\end{itemize}
+
+\section{What the Project Should and Should Not Do}
+
+\subsection{What We Should Do}
+
+\begin{itemize}
+\item use the NYC-only CSV as the official project dataset
+\item build one mixed-type scenario clustering pipeline in R
+\item build one separate spatial hotspot clustering pipeline in R
+\item exclude severity from the clustering input matrix and use it only afterward for interpretation
+\item engineer interpretable time features from \texttt{Start\_Time}
+\item collapse rare weather categories into an \texttt{Other} group
+\item use borough mainly for reporting and comparison
+\item validate cluster quality and stability rather than choosing cluster counts arbitrarily
+\end{itemize}
+
+\subsection{What We Should Avoid}
+
+\begin{itemize}
+\item do not run plain k-means on the raw mixed dataset
+\item do not use \texttt{ID}, \texttt{Description}, \texttt{Street}, or raw text as the first clustering input
+\item do not include \texttt{Severity} as a clustering feature if the goal is to interpret severity later
+\item do not build a full all-pairs Gower distance matrix for all 117,817 rows
+\item do not overclaim causality
+\item do not rank boroughs as more dangerous without traffic exposure denominators
+\end{itemize}
+
+\section{System Scope}
+
+\subsection{In Scope}
+
+\begin{itemize}
+\item ingestion of the NYC CSV
+\item cleaning and feature engineering in R
+\item mixed-type clustering for accident scenario discovery
+\item density-based spatial clustering for hotspot discovery
+\item cluster validation and stability assessment
+\item borough comparison of discovered clusters
+\item severity profiling after clustering
+\item exports, tables, and charts for the final report
+\end{itemize}
+
+\subsection{Out of Scope}
+
+\begin{itemize}
+\item causal inference
+\item real-time prediction
+\item live traffic feed integration
+\item deep learning on text descriptions
+\item national generalization
+\end{itemize}
+
+\section{Stakeholders}
+
+The main stakeholders are:
+
+\begin{itemize}
+\item the student research team
+\item the course instructor
+\item transportation and safety audiences who may read the final report
+\item the class presentation audience
+\end{itemize}
+
+\section{Functional Requirements}
+
+\textbf{FR-1 Data ingestion.} The system shall load the NYC accident CSV in R and preserve the original columns before preprocessing.
+
+\textbf{FR-2 Data cleaning.} The system shall parse timestamps, handle missing values, and convert binary and categorical variables to suitable types.
+
+\textbf{FR-3 Time feature engineering.} The system shall derive hour, hour band, weekday, weekend flag, month, season, and rush-hour status.
+
+\textbf{FR-4 Weather grouping.} The system shall collapse rare weather categories into a smaller interpretable set.
+
+\textbf{FR-5 Scenario matrix creation.} The system shall build a mixed-type feature matrix for scenario clustering.
+
+\textbf{FR-6 Leakage control.} The system shall exclude \texttt{Severity}, IDs, free-text fields, and raw coordinates from the scenario clustering matrix.
+
+\textbf{FR-7 Scenario clustering.} The system shall run \texttt{kproto()} with repeated starts to reduce unstable initializations.
+
+\textbf{FR-8 Cluster-count selection.} The system shall evaluate candidate cluster counts, recommended as $k = 3$ through $8$, using validation output.
+
+\textbf{FR-9 Stability analysis.} The system shall perform bootstrap-based cluster stability checks.
+
+\textbf{FR-10 Cluster profiling.} The system shall summarize each discovered cluster using dominant conditions, numeric summaries, borough composition, and severity composition.
+
+\textbf{FR-11 Spatial hotspot clustering.} The system shall run DBSCAN on projected start coordinates and identify hotspot clusters and noise points.
+
+\textbf{FR-12 Export.} The system shall export cluster-labeled outputs and summary tables for reporting.
+
+\section{Non-Functional Requirements}
+
+\textbf{NFR-1 Reproducibility.} The workflow shall be reproducible through R scripts or R Markdown with fixed random seeds where needed.
+
+\textbf{NFR-2 Interpretability.} The clustering approach shall favor explainability over novelty.
+
+\textbf{NFR-3 Scalability.} The main workflow shall operate on the full NYC subset without requiring a full pairwise distance matrix.
+
+\textbf{NFR-4 Maintainability.} The code shall be split into readable preprocessing, clustering, validation, and export stages.
+
+\textbf{NFR-5 Academic defensibility.} The algorithm choice shall be justified with source-backed reasons and clear methodological arguments.
+
+\textbf{NFR-6 Ethical reporting.} Results shall be presented as exploratory pattern discovery, not proof of causation.
+
+\section{Data Requirements}
+
+\subsection{Recommended Inputs for Scenario Clustering}
+
+Recommended features:
+
+\begin{itemize}
+\item \texttt{hour\_band}
+\item \texttt{weekday}
+\item \texttt{weekend}
+\item \texttt{season}
+\item \texttt{rush\_hour}
+\item \texttt{Sunrise\_Sunset}
+\item \texttt{weather\_group}
+\item \texttt{Temperature(F)}
+\item \texttt{Humidity(\%)}
+\item \texttt{Pressure(in)}
+\item \texttt{Visibility(mi)}
+\item \texttt{Wind\_Speed(mph)}
+\item \texttt{Crossing}
+\item \texttt{Junction}
+\item \texttt{Traffic\_Signal}
+\item \texttt{Stop}
+\item \texttt{Railway}
+\item \texttt{Amenity}
+\item \texttt{Station}
+\end{itemize}
+
+\subsection{Variables to Treat Carefully}
+
+\begin{itemize}
+\item \texttt{Precipitation(in)}: high missingness, so exclude from the core model unless justified
+\item \texttt{Distance(mi)}: may reflect reporting behavior or event extent more than accident scenario type
+\item \texttt{County}: useful for post-cluster comparison, but not ideal as a dominant clustering input
+\end{itemize}
+
+\subsection{Variables to Exclude From Scenario Clustering}
+
+\begin{itemize}
+\item \texttt{Severity}
+\item \texttt{ID}
+\item \texttt{Description}
+\item \texttt{Street}
+\item \texttt{City}
+\item \texttt{Zipcode}
+\item \texttt{Start\_Lat}
+\item \texttt{Start\_Lng}
+\item \texttt{End\_Lat}
+\item \texttt{End\_Lng}
+\end{itemize}
+
+\section{Detailed Analytical Design}
+
+\subsection{Scenario Clustering}
+
+Goal:
+
+\begin{itemize}
+\item discover accident archetypes such as rush-hour intersection clusters, night visibility clusters, and junction-heavy corridor clusters
+\end{itemize}
+
+Recommended method settings:
+
+\begin{itemize}
+\item algorithm: \texttt{kproto()}
+\item distance type: \texttt{type = "gower"}
+\item candidate cluster counts: $k = 3:8$
+\item repeated starts: at least \texttt{nstart = 5}, preferably \texttt{10}
+\item missing-data handling: internal imputation or a clearly documented preprocessing step
+\end{itemize}
+
+\subsection{Spatial Hotspot Clustering}
+
+Goal:
+
+\begin{itemize}
+\item discover dense accident corridors, interchange zones, and location-based hotspots
+\end{itemize}
+
+Recommended method settings:
+
+\begin{itemize}
+\item algorithm: \texttt{dbscan()}
+\item inputs: projected coordinates in approximate kilometer units
+\item parameter tuning: choose \texttt{eps} from a k-nearest-neighbor distance plot instead of guessing blindly
+\item inspect the percentage of noise points and the number of clusters
+\end{itemize}
+
+\subsection{Interpretation Strategy}
+
+After clustering:
+
+\begin{itemize}
+\item join cluster labels back to the cleaned dataset
+\item compute severity distribution by cluster
+\item compute borough distribution by cluster
+\item compare day versus night composition by cluster
+\item identify dominant roadway-control patterns by cluster
+\item assign plain-English names to the discovered clusters
+\end{itemize}
+
+\section{Validation Strategy}
+
+The project should not stop at obtaining cluster labels. It must show why the clusters are acceptable.
+
+\subsection{Validation for k-Prototypes}
+
+Use:
+
+\begin{itemize}
+\item \texttt{validation\_kproto()} for internal validation across candidate values of $k$
+\item \texttt{stability\_kproto()} for bootstrap stability checks
+\item \texttt{summary()} and \texttt{clprofiles()} for interpretation
+\end{itemize}
+
+Decision rule:
+
+\begin{itemize}
+\item choose a solution that balances interpretability, validation quality, and stability
+\item avoid cluster solutions dominated by tiny clusters unless they represent a meaningful rare-risk pattern
+\end{itemize}
+
+\subsection{Validation for DBSCAN}
+
+Use:
+
+\begin{itemize}
+\item kNN distance plots for parameter selection
+\item hotspot size inspection
+\item map-based inspection of cluster shapes
+\item percentage of noise points
+\end{itemize}
+
+\section{Use Cases}
+
+\textbf{UC-1 Full workflow execution.} A researcher runs the full preprocessing, scenario clustering, hotspot clustering, and export pipeline.
+
+\textbf{UC-2 Borough comparison.} A researcher compares how boroughs are distributed across the discovered scenario clusters.
+
+\textbf{UC-3 Severity interpretation.} A researcher evaluates which discovered clusters contain a larger proportion of severe accidents.
+
+\textbf{UC-4 Hotspot analysis.} A researcher maps DBSCAN hotspot assignments and interprets dense accident zones.
+
+\section{Acceptance Criteria}
+
+The project is successful if it can:
+
+\begin{itemize}
+\item load and preprocess the NYC dataset reproducibly in R
+\item generate an interpretable mixed-type clustering solution
+\item justify the selected cluster count with validation output
+\item demonstrate cluster stability analysis
+\item produce a DBSCAN hotspot analysis
+\item connect cluster results back to severity and borough patterns
+\item generate report-ready tables and figures
+\end{itemize}
+
+\section{Risks and Mitigations}
+
+\textbf{Risk 1:} Mixed-type distance is handled poorly.\\
+\textbf{Mitigation:} use \texttt{kproto()} rather than forcing the data into plain k-means.
+
+\textbf{Risk 2:} Location dominates the scenario clusters.\\
+\textbf{Mitigation:} keep spatial clustering separate from scenario clustering.
+
+\textbf{Risk 3:} Severity imbalance distorts the clusters.\\
+\textbf{Mitigation:} do not cluster on severity directly.
+
+\textbf{Risk 4:} Rare weather labels destabilize the solution.\\
+\textbf{Mitigation:} collapse infrequent weather conditions into an \texttt{Other} category.
+
+\textbf{Risk 5:} High precipitation missingness weakens the model.\\
+\textbf{Mitigation:} exclude precipitation from the core design or justify imputation clearly.
+
+\textbf{Risk 6:} The algorithm choice is challenged in review.\\
+\textbf{Mitigation:} justify the method choice with official R documentation and package literature.
+
+\section{Phase-by-Phase Implementation Breakdown}
+
+This section translates the SRS into an execution plan that can be implemented step by step. Each phase should be completed before the next phase is finalized.
+
+\subsection{Phase 1: Repository Setup and Data Organization}
+
+\textbf{Objective:} prepare a clean project structure for Topic 3 and isolate the NYC clustering work from other project experiments.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item create a dedicated git branch for the third research topic
+\item keep the original large US dataset outside the tracked Topic 3 deliverables if it is not required for submission
+\item place the NYC subset, the SRS source, the compiled PDF, and the R clustering script in one topic-specific location
+\item remove temporary helper scripts and LaTeX build artifacts from the working directory
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item a clean Topic 3 folder or file set
+\item a dedicated git branch
+\item a clean git status before commit
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item only the files needed for Topic 3 remain as intended deliverables
+\item the branch is ready for commit and push
+\end{itemize}
+
+\subsection{Phase 2: Data Preparation}
+
+\textbf{Objective:} build an analysis-ready NYC accident dataset in R.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item load the NYC CSV
+\item parse \texttt{Start\_Time} and related time fields
+\item derive hour, hour band, weekday, weekend, month, season, and rush-hour indicators
+\item convert roadway flags and category variables into factors
+\item inspect missingness and decide which variables will be excluded, retained, or imputed
+\item collapse rare weather conditions into a smaller grouped factor
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item cleaned analysis-ready R data frame
+\item a documented feature list for clustering
+\item a short data-cleaning summary for the report
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item the dataset can be loaded and transformed reproducibly
+\item the final clustering input variables are fixed and justified
+\end{itemize}
+
+\subsection{Phase 3: Scenario Clustering with k-Prototypes}
+
+\textbf{Objective:} discover mixed-type accident scenario groups across NYC.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item build the final mixed-type feature matrix
+\item exclude \texttt{Severity}, free-text columns, identifiers, and raw coordinates from the scenario matrix
+\item run candidate \texttt{kproto()} solutions for several values of $k$
+\item compare solutions using internal validation
+\item run repeated starts so the chosen clustering is not dependent on one weak initialization
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item candidate scenario clustering results
+\item validation output for the tested values of $k$
+\item a selected final scenario clustering model
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item one final scenario clustering solution is selected and justified
+\item the chosen clusters are interpretable and not trivially driven by one variable
+\end{itemize}
+
+\subsection{Phase 4: Cluster Validation and Stability}
+
+\textbf{Objective:} prove that the selected scenario clusters are academically defensible.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item apply \texttt{validation\_kproto()} to compare candidate solutions
+\item apply \texttt{stability\_kproto()} using bootstrap-based resampling
+\item inspect cluster sizes to ensure the solution is not dominated by very small clusters
+\item profile the clusters to confirm that each group has a meaningful interpretation
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item validation results for the selected cluster count
+\item stability metrics
+\item cluster profile summaries
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item the final cluster choice is supported by validation and stability evidence
+\item each cluster can be described in plain language
+\end{itemize}
+
+\subsection{Phase 5: Spatial Hotspot Clustering with DBSCAN}
+
+\textbf{Objective:} identify dense geographic accident hotspot zones in NYC.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item convert coordinates into projected distance units suitable for spatial clustering
+\item inspect k-nearest-neighbor distance behavior
+\item tune \texttt{eps} and \texttt{minPts}
+\item run DBSCAN on the projected coordinates
+\item separate hotspot clusters from noise points
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item final DBSCAN hotspot assignments
+\item hotspot counts and borough summaries
+\item parameter-selection justification
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item hotspot clusters are meaningful and not reduced to one giant cluster
+\item the level of noise is acceptable and explainable
+\end{itemize}
+
+\subsection{Phase 6: Post-Clustering Interpretation}
+
+\textbf{Objective:} connect the discovered clusters back to real accident patterns.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item join scenario cluster labels back to the cleaned dataset
+\item compare severity distribution by scenario cluster
+\item compare borough composition by scenario cluster
+\item compare day versus night and weather composition by cluster
+\item compare hotspot clusters with scenario clusters where useful
+\item assign plain-English names to the major cluster types
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item cluster interpretation tables
+\item severity-by-cluster summaries
+\item borough-by-cluster summaries
+\item named cluster narratives for the report
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item the final report can explain what each cluster represents
+\item the interpretation is tied back to transportation and safety context
+\end{itemize}
+
+\subsection{Phase 7: Reporting, Branching, and Submission}
+
+\textbf{Objective:} package the work cleanly for review and submission.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item finalize the SRS in \LaTeX
+\item compile the final PDF
+\item keep the R script aligned with the documented workflow
+\item commit the Topic 3 files on a dedicated branch
+\item push the branch to the remote repository
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item final \texttt{.tex} SRS
+\item compiled PDF
+\item R clustering workflow
+\item pushed git branch for Topic 3
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item the branch contains only the intended Topic 3 deliverables
+\item the remote branch is available for sharing, review, or merge
+\end{itemize}
+
+\section{Final Recommendation}
+
+If the project needs one strong and defensible direction, the best choice is:
+
+\begin{center}
+\textbf{Build an NYC accident clustering system in R with two complementary components:}
+\end{center}
+
+\begin{itemize}
+\item \textbf{k-prototypes} for mixed-type accident scenario discovery
+\item \textbf{DBSCAN} for spatial hotspot discovery
+\end{itemize}
+
+This direction is stronger than a simple descriptive analysis, more appropriate than plain k-means for the available variables, and more scalable than full-distance clustering on all NYC observations.
+
+\section{References}
+
+\begin{thebibliography}{9}
+
+\bibitem{r-kmeans}
+R Core Team.
+\textit{R Documentation: kmeans}.
+\url{https://search.r-project.org/R/refmans/stats/html/kmeans.html}
+
+\bibitem{r-daisy}
+R Documentation.
+\textit{cluster::daisy}.
+\url{https://stat.ethz.ch/R-manual/R-devel/library/cluster/html/daisy.html}
+
+\bibitem{r-clara}
+R Documentation.
+\textit{cluster::clara}.
+\url{https://stat.ethz.ch/R-manual/R-devel/library/cluster/html/clara.html}
+
+\bibitem{szepannek2018}
+Gero Szepannek.
+\textit{clustMixType: User-Friendly Clustering of Mixed-Type Data in R}.
+The R Journal.
+\url{https://journal.r-project.org/articles/RJ-2018-048/}
+
+\bibitem{r-kproto}
+R Documentation.
+\textit{clustMixType::kproto}.
+\url{https://search.r-project.org/CRAN/refmans/clustMixType/html/kproto.html}
+
+\bibitem{r-validation}
+R Documentation.
+\textit{clustMixType::validation\_kproto}.
+\url{https://search.r-project.org/CRAN/refmans/clustMixType/html/validation_kproto.html}
+
+\bibitem{r-stability}
+R Documentation.
+\textit{clustMixType::stability\_kproto}.
+\url{https://search.r-project.org/CRAN/refmans/clustMixType/html/stability_kproto.html}
+
+\bibitem{r-clprofiles}
+R Documentation.
+\textit{clustMixType::clprofiles}.
+\url{https://search.r-project.org/CRAN/refmans/clustMixType/html/clprofiles.html}
+
+\bibitem{r-dbscan}
+R Documentation.
+\textit{dbscan::dbscan}.
+\url{https://search.r-project.org/CRAN/refmans/dbscan/html/dbscan.html}
+
+\bibitem{hahsler2019}
+Michael Hahsler, Matthew Piekenbrock, and Derek Doran.
+\textit{dbscan: Fast Density-Based Clustering with R}.
+Journal of Statistical Software.
+\url{https://www.jstatsoft.org/v91/i01/}
+
+\end{thebibliography}
+
+\end{document}

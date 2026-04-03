@@ -2,4 +2,7 @@
 .Rhistory
 .RData
 .Ruserdata
-.US_Accidents_March23.csv
+US_Accidents_March23.csv
+*.aux
+*.log
+*.out
