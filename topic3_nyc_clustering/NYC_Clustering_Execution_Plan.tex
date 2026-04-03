@@ -1,0 +1,886 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{longtable}
+\usepackage{booktabs}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.7em}
+
+\title{Phase-by-Phase Execution Plan\\Long Island Traffic Accident Cluster Discovery in R}
+\author{AMS 597 Project Team}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% -------------------------------------------------------
+\section{Overview and Design Principles}
+
+This document translates the SRS into a concrete, step-by-step execution plan for the Long Island accident clustering project. Each phase has a single, well-scoped objective, a precise list of tasks, explicit done criteria, and notes on known data issues that must be resolved within that phase.
+
+The validated dataset (\texttt{li\_accidents\_clean.csv}) contains \textbf{33,375 rows} and \textbf{48 columns}. The analysis is split into two complementary pipelines:
+
+\begin{enumerate}
+  \item \textbf{Scenario pipeline}: mixed-type accident archetype discovery using \texttt{clustMixType::kproto()}
+  \item \textbf{Spatial pipeline}: highway corridor hotspot discovery using \texttt{dbscan::dbscan()}
+\end{enumerate}
+
+Each pipeline proceeds independently and their results are joined for interpretation only in Phase~9.
+
+\subsection{Confirmed Data Issues Requiring Action}
+
+A pre-analysis audit of \texttt{li\_accidents\_clean.csv} revealed the following issues that must be resolved during execution:
+
+\begin{longtable}{|p{4.5cm}|p{4.5cm}|p{5cm}|}
+\hline
+\textbf{Variable} & \textbf{Issue} & \textbf{Resolution} \\
+\hline
+\texttt{Duration\_Minutes} & Max = 2,236,406 min. 3,436 rows (10.3\%) above IQR upper fence of 270 min. 6 records exceed one week. & Cap at 99th percentile ($\approx$480 min) and apply log transform. Addressed in Phase~3. \\
+\hline
+\texttt{Distance(mi)} & 35.1\% of rows have Distance = 0. 251 records exceed 10 miles. Likely a reporting artifact, not a genuine trip distance. & Exclude from the clustering feature matrix. Addressed in Phase~4. \\
+\hline
+\texttt{Wind\_Direction} & String duplicates present: ``South'' and ``S'', ``West'' and ``W'', ``North'' and ``N'', ``East'' and ``E'' all coexist. & Normalize to 8-direction abbreviation scheme. Addressed in Phase~3. \\
+\hline
+\texttt{Bump}, \texttt{Roundabout}, \texttt{Turning\_Loop}, \texttt{Traffic\_Calming}, \texttt{No\_Exit} & All are 0\% TRUE across all 33,375 rows. Carry zero signal for clustering. & Drop from all feature matrices. Addressed in Phase~4. \\
+\hline
+\texttt{Give\_Way} & Only 0.9\% TRUE. Near-zero variance. & Exclude from core feature matrix. Addressed in Phase~4. \\
+\hline
+\texttt{Precipitation(in)} & 20.15\% missing. & Exclude from core model per SRS. Confirmed in Phase~2. \\
+\hline
+\texttt{Wind\_Chill(F)} & 15.01\% missing and highly correlated with Temperature. & Exclude from all models. Confirmed in Phase~2. \\
+\hline
+\texttt{End\_Lat / End\_Lng} & 39.21\% missing. & Exclude; use Start coordinates only. Confirmed in Phase~2. \\
+\hline
+\end{longtable}
+
+% -------------------------------------------------------
+\newpage
+\section{Phase 1: Environment and Reproducibility Setup}
+
+\subsection{Objective}
+
+Establish a reproducible R environment before any data is loaded or transformed, so that all subsequent phases produce identical results across machines and sessions.
+
+\subsection{Tasks}
+
+\begin{enumerate}
+  \item Install and load required packages. The full list is:
+  \begin{itemize}
+    \item \texttt{tidyverse} (data manipulation and plotting)
+    \item \texttt{lubridate} (timestamp parsing)
+    \item \texttt{clustMixType} (k-prototypes clustering)
+    \item \texttt{dbscan} (density-based spatial clustering)
+    \item \texttt{cluster} (Gower distance reference and silhouette)
+    \item \texttt{fpc} (cluster stability helpers)
+    \item \texttt{ggplot2} (visualization)
+    \item \texttt{sf} or \texttt{geosphere} (coordinate projection for DBSCAN)
+    \item \texttt{factoextra} (optional: validation plots)
+  \end{itemize}
+
+  \item Set a global random seed at the top of the master script:
+  \begin{verbatim}
+set.seed(42)
+  \end{verbatim}
+  All subsequent calls that accept a \texttt{set.seed} argument or \texttt{nstart} parameter must inherit or re-declare this seed to ensure determinism.
+
+  \item Organize the working directory so that:
+  \begin{itemize}
+    \item \texttt{li\_accidents\_clean.csv} is the sole data input
+    \item the R script is named \texttt{li\_clustering.R} (or \texttt{li\_clustering.Rmd})
+    \item output tables and figures write to a \texttt{/output/} subfolder
+    \item no intermediate \texttt{.RData} blobs are committed to the repository
+  \end{itemize}
+
+  \item Confirm that the R version and package versions are recorded. Add a short \texttt{sessionInfo()} call at the bottom of the script or Rmd for reproducibility.
+\end{enumerate}
+
+\subsection{Done Criteria}
+
+\begin{itemize}
+  \item All packages install without errors on the target machine.
+  \item The master script runs from a clean R session without manual interventions.
+  \item The folder structure matches the layout described above.
+\end{itemize}
+
+% -------------------------------------------------------
+\newpage
+\section{Phase 2: Data Ingestion and Raw Profiling}
+
+\subsection{Objective}
+
+Load the raw dataset, confirm its structure matches expectations from the SRS, and produce a documented profiling report before any transformation is applied. This phase is read-only with respect to the data.
+
+\subsection{Tasks}
+
+\begin{enumerate}
+  \item Load the CSV:
+  \begin{verbatim}
+df_raw <- read.csv("li_accidents_clean.csv", stringsAsFactors = FALSE)
+  \end{verbatim}
+
+  \item Verify dimensions: expect 33,375 rows and 48 columns. Halt if either dimension is unexpected.
+
+  \item Confirm the county split:
+  \begin{itemize}
+    \item Nassau: 19,390 rows
+    \item Suffolk: 13,838 rows
+    \item Queens: 147 rows (western LI edge, retained but not the focus)
+  \end{itemize}
+
+  \item Confirm the severity distribution:
+  \begin{itemize}
+    \item Severity 1: 161
+    \item Severity 2: 28,357
+    \item Severity 3: 3,938
+    \item Severity 4: 919
+  \end{itemize}
+  Note: Severity 2 accounts for 85\% of records. Severity is not a clustering input.
+
+  \item Compute and tabulate missingness for every column. Confirm the following critical values:
+  \begin{itemize}
+    \item \texttt{End\_Lat} / \texttt{End\_Lng}: $\approx$39.2\% missing
+    \item \texttt{Precipitation(in)}: $\approx$20.1\% missing
+    \item \texttt{Wind\_Chill(F)}: $\approx$15.0\% missing
+    \item All other clustering candidates: below 1\% missing
+  \end{itemize}
+
+  \item Confirm that five near-zero binary flags carry no signal:
+  \begin{itemize}
+    \item \texttt{Bump}, \texttt{Roundabout}, \texttt{Turning\_Loop}, \texttt{Traffic\_Calming}, \texttt{No\_Exit}: all 0\% TRUE
+  \end{itemize}
+
+  \item Confirm the \texttt{Duration\_Minutes} anomaly:
+  \begin{itemize}
+    \item Median $\approx$ 78 min
+    \item Mean $\approx$ 449 min (inflated by outliers)
+    \item Max = 2,236,406 min
+    \item 21 records exceed 1,440 min (one day)
+    \item 6 records exceed 10,080 min (one week)
+  \end{itemize}
+
+  \item Confirm that \texttt{Distance(mi)} has 35.1\% zero values and a max of 35.6 miles.
+
+  \item Inspect \texttt{Wind\_Direction} for string duplicates (``South'' vs ``S'', ``West'' vs ``W'', etc.).
+
+  \item Tabulate \texttt{Weather\_Condition}: confirm that the top 6--8 labels account for the majority of rows and the long tail contains many sparse labels requiring grouping.
+
+  \item Document all findings in a short profiling summary. This summary feeds directly into the data cleaning justifications in the final report.
+\end{enumerate}
+
+\subsection{Done Criteria}
+
+\begin{itemize}
+  \item All dimension, county, severity, and missingness checks pass.
+  \item Known anomalies (Duration outliers, Distance zeros, Wind\_Direction duplicates) are confirmed and recorded.
+  \item No data transformations have been applied yet.
+\end{itemize}
+
+% -------------------------------------------------------
+\newpage
+\section{Phase 3: Feature Engineering}
+
+\subsection{Objective}
+
+Derive analysis-ready features from raw columns. This phase produces all engineered variables that will be used in the clustering input matrices.
+
+\subsection{Tasks}
+
+\subsubsection*{3A. Timestamp Features}
+
+\begin{enumerate}
+  \item Parse \texttt{Start\_Time} to a \texttt{POSIXct} object using \texttt{lubridate::ymd\_hms()}.
+  \item Derive the following variables:
+  \begin{itemize}
+    \item \texttt{hour}: integer 0--23
+    \item \texttt{hour\_band}: factor with levels \texttt{Early\_AM} (0--5), \texttt{AM\_Rush} (6--9), \texttt{Midday} (10--14), \texttt{PM\_Rush} (15--18), \texttt{Evening} (19--21), \texttt{Late\_Night} (22--23)
+    \item \texttt{weekday}: factor ordered Monday through Sunday
+    \item \texttt{weekend}: logical TRUE if Saturday or Sunday
+    \item \texttt{month}: integer 1--12
+    \item \texttt{season}: factor with levels \texttt{Winter} (Dec--Feb), \texttt{Spring} (Mar--May), \texttt{Summer} (Jun--Aug), \texttt{Fall} (Sep--Nov)
+    \item \texttt{rush\_hour}: logical TRUE if \texttt{hour} is in 6--9 or 15--18
+  \end{itemize}
+  \item Verify that no \texttt{NA} values appear in any derived temporal feature.
+\end{enumerate}
+
+\subsubsection*{3B. Duration Treatment}
+
+\begin{enumerate}
+  \item Confirm that the 99th percentile of \texttt{Duration\_Minutes} is approximately 480 minutes.
+  \item Create \texttt{Duration\_cap}: replace any value above 480 with 480. This caps the 1\% of extreme outlier records without discarding them.
+  \item Create \texttt{log\_Duration}: apply \texttt{log1p(Duration\_cap)} to compress the right-skewed distribution. This variable is a candidate for the scenario feature matrix.
+  \item Do not delete the original \texttt{Duration\_Minutes} column; it is retained for reference.
+  \item Verify: \texttt{summary(log\_Duration)} should show no extreme values and a reasonable distribution.
+\end{enumerate}
+
+\subsubsection*{3C. Weather Grouping}
+
+\begin{enumerate}
+  \item Count the number of distinct \texttt{Weather\_Condition} labels (approximately 50--60 in the raw data).
+  \item Collapse labels into a \texttt{weather\_group} factor with the following levels:
+  \begin{itemize}
+    \item \texttt{Clear}: ``Fair'', ``Clear'', ``Fair / Windy''
+    \item \texttt{Cloudy}: ``Mostly Cloudy'', ``Partly Cloudy'', ``Scattered Clouds'', ``Overcast'', ``Cloudy'', ``Mostly Cloudy / Windy'', ``Partly Cloudy / Windy'', ``Cloudy / Windy''
+    \item \texttt{Rain}: ``Light Rain'', ``Rain'', ``Heavy Rain'', ``Light Drizzle'', ``Light Rain / Windy'', ``Heavy Rain / Windy'', ``Drizzle''
+    \item \texttt{Snow\_Ice}: ``Light Snow'', ``Snow'', ``Heavy Snow'', ``Wintry Mix'', ``Light Freezing Rain'', ``Ice Pellets'', ``Sleet''
+    \item \texttt{Fog\_Haze}: ``Fog'', ``Haze'', ``Smoke'', ``Mist'', ``Patches of Fog'', ``Shallow Fog''
+    \item \texttt{Thunderstorm}: any label containing ``Thunder''
+    \item \texttt{Other}: all remaining labels with fewer than 30 records
+  \end{itemize}
+  \item Verify the distribution of \texttt{weather\_group} with a frequency table. The \texttt{Clear} and \texttt{Cloudy} groups should dominate; \texttt{Other} should contain fewer than 200 records total.
+\end{enumerate}
+
+\subsubsection*{3D. Wind Direction Normalization}
+
+\begin{enumerate}
+  \item Identify all unique values of \texttt{Wind\_Direction}. The raw data contains both abbreviated and full-word forms: ``South'' and ``S'', ``West'' and ``W'', ``North'' and ``N'', ``East'' and ``E''.
+  \item Normalize to standard 8-direction abbreviations: N, NE, E, SE, S, SW, W, NW.
+  \item Map ``CALM'' and ``Variable'' / ``VAR'' to a separate level \texttt{Variable\_Calm}.
+  \item Confirm the final \texttt{wind\_dir\_norm} factor has at most 9 levels.
+  \item This variable is optional for the core scenario model; include it only if the number of factor levels does not dominate the Gower distance calculation. If in doubt, exclude it and note this decision.
+\end{enumerate}
+
+\subsubsection*{3E. Binary Flag Audit}
+
+\begin{enumerate}
+  \item Confirm zero-variance flags: \texttt{Bump}, \texttt{Roundabout}, \texttt{Turning\_Loop}, \texttt{Traffic\_Calming}, \texttt{No\_Exit} are all identically FALSE. Mark these as excluded.
+  \item Confirm near-zero flags: \texttt{Give\_Way} (0.9\% TRUE), \texttt{Station} (0.7\% TRUE), \texttt{Railway} (0.15\% TRUE), \texttt{Amenity} (0.34\% TRUE). These carry minimal signal. Exclude \texttt{Give\_Way}, \texttt{Station}, \texttt{Railway}, and \texttt{Amenity} from the core scenario matrix. Document this decision.
+  \item Retain for the core scenario matrix: \texttt{Crossing} (10.1\%), \texttt{Junction} (16.0\%), \texttt{Traffic\_Signal} (9.5\%), \texttt{Stop} (1.0\%).
+  \item Convert all retained binary flags to \texttt{factor} type with levels \texttt{TRUE} and \texttt{FALSE} so \texttt{kproto()} treats them as categorical.
+\end{enumerate}
+
+\subsection{Done Criteria}
+
+\begin{itemize}
+  \item All engineered features are present in the working data frame with correct types.
+  \item \texttt{weather\_group}, \texttt{hour\_band}, \texttt{season}, \texttt{weekday} are factors.
+  \item \texttt{log\_Duration} exists and has no extreme values.
+  \item \texttt{Wind\_Direction} is normalized to at most 9 levels.
+  \item All zero-variance and near-zero-variance flags are marked for exclusion.
+\end{itemize}
+
+% -------------------------------------------------------
+\newpage
+\section{Phase 4: Build Clustering Input Matrices}
+
+\subsection{Objective}
+
+Construct the final feature matrices for each pipeline. Nothing outside these matrices enters the clustering algorithms.
+
+\subsection{Tasks}
+
+\subsubsection*{4A. Scenario Matrix}
+
+\begin{enumerate}
+  \item The scenario feature matrix (\texttt{df\_scenario}) contains exactly the following columns:
+
+  \textit{Temporal factors:}
+  \begin{itemize}
+    \item \texttt{hour\_band} (factor)
+    \item \texttt{weekday} (factor)
+    \item \texttt{weekend} (factor or logical converted to factor)
+    \item \texttt{season} (factor)
+    \item \texttt{rush\_hour} (factor)
+    \item \texttt{Sunrise\_Sunset} (factor: Day / Night)
+  \end{itemize}
+
+  \textit{Weather factors:}
+  \begin{itemize}
+    \item \texttt{weather\_group} (factor, 7 levels)
+  \end{itemize}
+
+  \textit{Numeric weather:}
+  \begin{itemize}
+    \item \texttt{Temperature(F)} (numeric)
+    \item \texttt{Humidity(\%)} (numeric)
+    \item \texttt{Pressure(in)} (numeric)
+    \item \texttt{Visibility(mi)} (numeric)
+    \item \texttt{Wind\_Speed(mph)} (numeric)
+  \end{itemize}
+
+  \textit{Road context factors:}
+  \begin{itemize}
+    \item \texttt{Crossing} (factor)
+    \item \texttt{Junction} (factor)
+    \item \texttt{Traffic\_Signal} (factor)
+    \item \texttt{Stop} (factor)
+  \end{itemize}
+
+  \textit{Duration (optional):}
+  \begin{itemize}
+    \item \texttt{log\_Duration} (numeric) --- include only if less than 5\% of values are NA after capping
+  \end{itemize}
+
+  \item Confirm the following variables are \textbf{not} present in \texttt{df\_scenario}:
+  \begin{itemize}
+    \item \texttt{Severity}, \texttt{ID}, \texttt{Source}, \texttt{Description}, \texttt{Street}, \texttt{City}, \texttt{Zipcode}, \texttt{nzip}
+    \item \texttt{Start\_Lat}, \texttt{Start\_Lng}, \texttt{End\_Lat}, \texttt{End\_Lng}
+    \item \texttt{County} (used for post-cluster comparison only)
+    \item \texttt{Distance(mi)} (35\% zeros, not a scenario characteristic)
+    \item \texttt{Precipitation(in)}, \texttt{Wind\_Chill(F)} (excessive missingness)
+    \item All zero/near-zero flags identified in Phase 3E
+  \end{itemize}
+
+  \item Handle remaining missing values in \texttt{df\_scenario}:
+  \begin{itemize}
+    \item For numeric columns with fewer than 1\% missing (Temperature, Humidity, Pressure, Visibility, Wind\_Speed): impute with the column median. Record how many rows were imputed.
+    \item For factor columns: if fewer than 10 rows are missing, impute with the mode. If more, treat as a separate \texttt{Unknown} level.
+  \end{itemize}
+
+  \item Confirm the final \texttt{df\_scenario} has zero missing values before proceeding to Phase~5.
+
+  \item Record the final column list and row count in a comment block at the top of the clustering script.
+\end{enumerate}
+
+\subsubsection*{4B. Spatial Matrix}
+
+\begin{enumerate}
+  \item The spatial feature matrix (\texttt{df\_spatial}) contains only:
+  \begin{itemize}
+    \item \texttt{x\_km}: Start\_Lng converted to approximate kilometers
+    \item \texttt{y\_km}: Start\_Lat converted to approximate kilometers
+  \end{itemize}
+
+  \item Use the flat-earth approximation centered on the LI midpoint ($\approx 40.8^\circ$N, $-73.2^\circ$W):
+  \begin{verbatim}
+lat0 <- 40.8
+x_km <- (df$Start_Lng - (-73.2)) * 111.32 * cos(lat0 * pi / 180)
+y_km <- (df$Start_Lat - lat0) * 110.574
+  \end{verbatim}
+  This produces distances in kilometers for the DBSCAN \texttt{eps} parameter.
+
+  \item Confirm there are no missing values in \texttt{Start\_Lat} or \texttt{Start\_Lng}.
+
+  \item Confirm the spatial extent of the projected coordinates corresponds to Long Island's east-west span ($\approx$170 km) and north-south span ($\approx$40 km).
+\end{enumerate}
+
+\subsection{Done Criteria}
+
+\begin{itemize}
+  \item \texttt{df\_scenario} has zero NAs, correct column types, and the documented variable set.
+  \item \texttt{df\_spatial} has two numeric columns, no NAs, and correct geographic extent.
+  \item Both matrices have 33,375 rows (same row order as the original data for label joining).
+\end{itemize}
+
+% -------------------------------------------------------
+\newpage
+\section{Phase 5: k-Prototypes Scenario Clustering}
+
+\subsection{Objective}
+
+Run the k-prototypes algorithm on \texttt{df\_scenario} for candidate values of $k$, using Gower-style normalization, repeated starts, and a consistent random seed.
+
+\subsection{Tasks}
+
+\begin{enumerate}
+  \item Verify that all factor columns in \texttt{df\_scenario} are \texttt{factor} type and all numeric columns are \texttt{numeric} type. \texttt{kproto()} will error if this is not satisfied.
+
+  \item Set \texttt{lambda = NULL} to let \texttt{kproto()} estimate the numeric-to-categorical weight ratio automatically. Document the estimated lambda in the report.
+
+  \item Use \texttt{type = "gower"} to range-normalize numeric variables before computing distances. This prevents high-variance numeric columns (e.g.\ Temperature) from dominating the distance calculation.
+
+  \item Run \texttt{kproto()} for $k \in \{3, 4, 5, 6, 7, 8\}$ with \texttt{nstart = 10}. Store all six solutions in a named list:
+  \begin{verbatim}
+kp_results <- list()
+for (k in 3:8) {
+  set.seed(42)
+  kp_results[[as.character(k)]] <- kproto(
+    x     = df_scenario,
+    k     = k,
+    nstart = 10,
+    type  = "gower",
+    verbose = FALSE
+  )
+}
+  \end{verbatim}
+
+  \item For each solution, record:
+  \begin{itemize}
+    \item within-cluster total distance (the objective function value, \texttt{\$tot.withinss})
+    \item cluster sizes (check for any cluster with fewer than 100 rows)
+    \item whether any cluster is trivially dominated by a single factor level
+  \end{itemize}
+
+  \item Plot \texttt{tot.withinss} against $k$ to produce an elbow plot. Label each point with its $k$ value.
+
+  \item Flag any $k$ solution where the smallest cluster contains fewer than 200 rows as potentially unstable. Do not automatically discard it, but note it for Phase~6 stability checks.
+\end{enumerate}
+
+\subsection{Done Criteria}
+
+\begin{itemize}
+  \item Six candidate \texttt{kproto} solutions exist in \texttt{kp\_results}.
+  \item Elbow plot is produced and saved.
+  \item Cluster sizes are tabulated for all six solutions.
+  \item No solution crashes due to missing values or type mismatches.
+\end{itemize}
+
+% -------------------------------------------------------
+\newpage
+\section{Phase 6: Cluster Validation and Stability}
+
+\subsection{Objective}
+
+Select the best value of $k$ using internal validation metrics and bootstrap stability, then confirm that the chosen solution is academically defensible.
+
+\subsection{Tasks}
+
+\subsubsection*{6A. Internal Validation}
+
+\begin{enumerate}
+  \item Run \texttt{clustMixType::validation\_kproto()} across the candidate $k$ range. This function computes internal indices suited to mixed-type data (including within-cluster compactness relative to between-cluster separation):
+  \begin{verbatim}
+val_result <- validation_kproto(
+  method = "kproto",
+  object = df_scenario,
+  k      = 3:8,
+  nstart = 5,
+  type   = "gower"
+)
+  \end{verbatim}
+
+  \item Inspect and compare the validation indices across all $k$ values. Look for:
+  \begin{itemize}
+    \item a clear ``knee'' in the within-cluster distance
+    \item consistently better separation scores at a particular $k$
+    \item no sharp degradation in balance between $k$ and $k+1$
+  \end{itemize}
+
+  \item Do not choose $k$ solely to maximize one metric. Balance interpretability (can each cluster be described meaningfully?) against validation evidence.
+\end{enumerate}
+
+\subsubsection*{6B. Bootstrap Stability}
+
+\begin{enumerate}
+  \item Run \texttt{clustMixType::stability\_kproto()} on the top two candidate $k$ values from 6A:
+  \begin{verbatim}
+stab <- stability_kproto(
+  object = df_scenario,
+  k      = k_best,
+  B      = 50,
+  type   = "gower"
+)
+  \end{verbatim}
+
+  \item Inspect the average Jaccard similarity for each cluster across bootstrap replicates. A Jaccard above 0.6 for all clusters is considered stable; above 0.75 is strong.
+
+  \item If the chosen $k$ has one or more clusters with Jaccard below 0.5, note this as a limitation and prefer the next-best validated $k$.
+
+  \item Record both the validation indices and the Jaccard summary in a table for the report.
+\end{enumerate}
+
+\subsubsection*{6C. Cluster Profile Check}
+
+\begin{enumerate}
+  \item For the selected $k$, run \texttt{clustMixType::clprofiles()} to produce factor-level bar plots and numeric boxplots for each cluster.
+
+  \item Confirm that at least two clusters have a clearly different dominant weather group, hour band, or roadway context. If all clusters look nearly identical in their profiles, the chosen $k$ is too high or the feature matrix needs revision.
+
+  \item Attach plain-English working names to the clusters at this stage. These are preliminary labels that will be refined in Phase~9 after severity and county profiling. Examples:
+  \begin{itemize}
+    \item \textit{AM Rush Corridor}: morning hour band, high Junction, mostly Clear weather
+    \item \textit{Night Low-Visibility}: Night Sunrise\_Sunset, Fog or Rain weather group
+    \item \textit{Weekend Surface Road}: weekend TRUE, Traffic\_Signal heavy, Midday or Evening hour band
+    \item \textit{Winter Adverse}: Snow\_Ice weather group, low Temperature, low Visibility
+  \end{itemize}
+\end{enumerate}
+
+\subsection{Done Criteria}
+
+\begin{itemize}
+  \item One final value of $k$ is selected and formally justified with validation and stability evidence.
+  \item Each cluster has a working plain-English name.
+  \item A cluster sizes table and the Jaccard summary are ready for the final report.
+\end{itemize}
+
+% -------------------------------------------------------
+\newpage
+\section{Phase 7: DBSCAN Spatial Hotspot Clustering}
+
+\subsection{Objective}
+
+Identify dense accident corridor clusters along Long Island's major east-west highways using density-based spatial clustering. This pipeline runs entirely on the projected coordinate matrix \texttt{df\_spatial}.
+
+\subsection{Tasks}
+
+\subsubsection*{7A. Parameter Selection}
+
+\begin{enumerate}
+  \item Run a k-nearest-neighbor distance plot to choose \texttt{eps}:
+  \begin{verbatim}
+knn_dist <- kNNdist(df_spatial, k = 5)
+knn_sorted <- sort(knn_dist)
+plot(knn_sorted, type = "l", xlab = "Points sorted by distance",
+     ylab = "5-NN distance (km)", main = "kNN Distance Plot")
+  \end{verbatim}
+
+  \item Identify the ``elbow'' in the kNN distance curve. On Long Island's highway-dominated coordinate set, expect the elbow to fall in the range of 0.3--0.8 km given the density of highway segments.
+
+  \item Set \texttt{minPts} between 10 and 30. A higher \texttt{minPts} suppresses small isolated clusters and emphasizes true highway-density zones. Start with \texttt{minPts = 15} as the initial candidate.
+
+  \item Record the chosen \texttt{eps} and \texttt{minPts} values and justify them with reference to the kNN distance plot.
+\end{enumerate}
+
+\subsubsection*{7B. Run DBSCAN}
+
+\begin{enumerate}
+  \item Run DBSCAN with the selected parameters:
+  \begin{verbatim}
+db_result <- dbscan(df_spatial, eps = eps_chosen, minPts = minPts_chosen)
+  \end{verbatim}
+
+  \item Tabulate the results:
+  \begin{itemize}
+    \item number of non-noise clusters (cluster label $> 0$)
+    \item size of each cluster
+    \item percentage of rows labeled as noise (cluster label $= 0$)
+  \end{itemize}
+
+  \item Accept the solution if the noise percentage is between 5\% and 30\%. If noise exceeds 50\%, \texttt{eps} is too small. If there is only one cluster, \texttt{eps} is too large. Adjust and re-run if needed, documenting each trial.
+
+  \item Inspect cluster shapes by plotting \texttt{x\_km} vs \texttt{y\_km} colored by cluster label. Expect elongated east-west shapes corresponding to the LIE ($\approx$latitude 40.77), Southern State Pkwy ($\approx$latitude 40.70), and Northern State Pkwy ($\approx$latitude 40.80).
+\end{enumerate}
+
+\subsubsection*{7C. Corridor Assignment}
+
+\begin{enumerate}
+  \item For each non-noise DBSCAN cluster, compute the centroid latitude and longitude. Cross-reference centroid latitude against known corridor latitudes to assign a corridor label:
+
+  \begin{center}
+  \begin{tabular}{|l|l|}
+  \hline
+  \textbf{Centroid Latitude (approx)} & \textbf{Corridor} \\
+  \hline
+  40.74 -- 40.76 & Long Island Expressway (I-495) \\
+  40.68 -- 40.72 & Southern State Parkway \\
+  40.78 -- 40.82 & Northern State Parkway \\
+  40.64 -- 40.68 & Sunrise Highway \\
+  40.72 -- 40.76 (north-south elongated) & Meadowbrook / Wantagh Pkwy \\
+  \hline
+  \end{tabular}
+  \end{center}
+
+  \item Clusters that do not align with any known major corridor are labeled as \textit{Surface Road Cluster} or by the dominant city name.
+
+  \item Record which major highways appear as DBSCAN clusters and which do not. Note any unexpected hotspot zones.
+\end{enumerate}
+
+\subsection{Done Criteria}
+
+\begin{itemize}
+  \item DBSCAN solution has between 3 and 15 non-noise clusters with noise between 5\% and 30\%.
+  \item Cluster shapes visually correspond to LI highway corridor alignments.
+  \item Each cluster has a corridor label or a surface-road label.
+  \item Parameter selection is justified with the kNN distance plot.
+\end{itemize}
+
+% -------------------------------------------------------
+\newpage
+\section{Phase 8: Post-Clustering Interpretation}
+
+\subsection{Objective}
+
+Join both sets of cluster labels back to the original data and produce the interpretation tables and profiles that will drive the final report.
+
+\subsection{Tasks}
+
+\subsubsection*{8A. Label Joining}
+
+\begin{enumerate}
+  \item Add scenario cluster labels to the original data frame:
+  \begin{verbatim}
+df_raw$scenario_cluster <- kp_final$cluster
+  \end{verbatim}
+
+  \item Add spatial cluster labels:
+  \begin{verbatim}
+df_raw$spatial_cluster <- db_result$cluster
+  \end{verbatim}
+
+  \item Confirm that both label vectors have 33,375 elements and no NAs.
+\end{enumerate}
+
+\subsubsection*{8B. Severity Profiling by Scenario Cluster}
+
+\begin{enumerate}
+  \item Compute the percentage of Severity 3 and Severity 4 accidents within each scenario cluster.
+  \item Produce a summary table:
+
+  \begin{center}
+  \begin{tabular}{|l|r|r|r|r|r|}
+  \hline
+  \textbf{Cluster} & \textbf{N} & \textbf{Sev1 \%} & \textbf{Sev2 \%} & \textbf{Sev3 \%} & \textbf{Sev4 \%} \\
+  \hline
+  (fill at runtime) & & & & & \\
+  \hline
+  \end{tabular}
+  \end{center}
+
+  \item Flag any cluster with a Severity 4 share more than twice the dataset average (2.75\%) as a high-risk archetype.
+\end{enumerate}
+
+\subsubsection*{8C. County Composition by Scenario Cluster}
+
+\begin{enumerate}
+  \item Compute the Nassau and Suffolk share within each scenario cluster.
+  \item Produce a cross-tabulation. Identify whether any cluster is predominantly Nassau or predominantly Suffolk, and interpret this in light of the highway geography.
+\end{enumerate}
+
+\subsubsection*{8D. Weather and Time Profile by Cluster}
+
+\begin{enumerate}
+  \item For each scenario cluster, compute:
+  \begin{itemize}
+    \item dominant \texttt{weather\_group} (top label and its share)
+    \item dominant \texttt{hour\_band}
+    \item Day vs Night share (\texttt{Sunrise\_Sunset})
+    \item weekend share
+    \item mean Temperature, Visibility, and Wind\_Speed
+  \end{itemize}
+  \item Produce a compact cluster profile table for the report.
+\end{enumerate}
+
+\subsubsection*{8E. Spatial--Scenario Cross-Tabulation}
+
+\begin{enumerate}
+  \item For non-noise DBSCAN records only, cross-tabulate \texttt{spatial\_cluster} against \texttt{scenario\_cluster}.
+  \item Identify whether corridor-specific hotspot zones are dominated by particular scenario archetypes. For example, does the LIE corridor cluster map predominantly to an AM Rush archetype? Does the surface road cluster map to a junction-heavy scenario?
+  \item This cross-tabulation is a key insight of the two-pipeline design.
+\end{enumerate}
+
+\subsubsection*{8F. Final Cluster Naming}
+
+\begin{enumerate}
+  \item Using the full profile from 8B through 8E, finalize the plain-English name for each scenario cluster and each spatial hotspot cluster.
+  \item Scenario cluster names should reflect the dominant time, weather, and road context. Examples:
+  \begin{itemize}
+    \item \textit{AM Rush --- Clear Highway}
+    \item \textit{PM Merge Zone --- Congested Commute}
+    \item \textit{Night Low-Visibility --- Fog and Rain}
+    \item \textit{Winter Adverse --- Snow and Ice}
+    \item \textit{Weekend Surface Road --- Signal and Crossing}
+  \end{itemize}
+  \item Spatial hotspot names should reference the corridor. Example: \textit{LIE Westbound Corridor}, \textit{Southern State Pkwy Eastbound Corridor}.
+\end{enumerate}
+
+\subsection{Done Criteria}
+
+\begin{itemize}
+  \item Severity, county, weather, and temporal profile tables are complete.
+  \item Spatial--scenario cross-tabulation is produced.
+  \item All clusters have finalized plain-English names.
+  \item No analytical question from the SRS research questions is left unaddressed.
+\end{itemize}
+
+% -------------------------------------------------------
+\newpage
+\section{Phase 9: Export and Visualization}
+
+\subsection{Objective}
+
+Produce all report-ready tables, figures, and the final labeled dataset for submission.
+
+\subsection{Tasks}
+
+\begin{enumerate}
+  \item \textbf{Elbow plot}: \texttt{tot.withinss} vs $k$ for the k-prototypes solutions (Phase~5).
+
+  \item \textbf{Validation index plot}: internal validation metrics across $k = 3:8$ (Phase~6A).
+
+  \item \textbf{Stability plot}: Jaccard bootstrap summary for the selected $k$ (Phase~6B).
+
+  \item \textbf{Cluster profile plot}: \texttt{clprofiles()} output for the selected scenario clustering (Phase~6C). One panel per cluster showing factor bar charts and numeric boxplots.
+
+  \item \textbf{kNN distance plot}: the 5-NN distance curve used to select DBSCAN \texttt{eps} (Phase~7A).
+
+  \item \textbf{Spatial hotspot map}: scatter plot of \texttt{x\_km} vs \texttt{y\_km} colored by DBSCAN cluster label (Phase~7B). Noise points shown in grey. Highway corridor labels overlaid.
+
+  \item \textbf{Severity-by-cluster table}: formatted table for the report showing each scenario cluster's Severity 3+4 share (Phase~8B).
+
+  \item \textbf{County-by-cluster table}: Nassau vs Suffolk composition by scenario cluster (Phase~8C).
+
+  \item \textbf{Spatial--scenario cross-tabulation}: heat-table or grouped bar chart (Phase~8E).
+
+  \item \textbf{Labeled CSV export}: write the final data frame with \texttt{scenario\_cluster} and \texttt{spatial\_cluster} columns to \texttt{output/li\_accidents\_clustered.csv}.
+
+  \item All figures should be saved at 150 DPI or higher in PNG or PDF format to \texttt{output/figures/}.
+
+  \item All tables should be saved as CSV to \texttt{output/tables/} for easy insertion into the LaTeX report.
+\end{enumerate}
+
+\subsection{Done Criteria}
+
+\begin{itemize}
+  \item All nine figures exist in \texttt{output/figures/}.
+  \item All tables exist in \texttt{output/tables/}.
+  \item The labeled CSV is exported.
+  \item Every visual is readable at print resolution without axis label truncation.
+\end{itemize}
+
+% -------------------------------------------------------
+\newpage
+\section{Phase 10: Final Report and Submission}
+
+\subsection{Objective}
+
+Assemble the final report, compile the PDF, and prepare the branch for review.
+
+\subsection{Tasks}
+
+\begin{enumerate}
+  \item Write the final report in LaTeX. Sections to include:
+  \begin{itemize}
+    \item Introduction and motivation (derived from SRS Sections 1--3)
+    \item Dataset description and data audit findings (Phase~2 summary)
+    \item Feature engineering decisions (Phase~3, with justification table)
+    \item Method selection rationale (derived from SRS Section~4)
+    \item Scenario clustering results: elbow plot, chosen $k$, validation and stability, cluster profiles
+    \item Spatial hotspot results: kNN plot, DBSCAN map, corridor assignments
+    \item Interpretation: severity table, county table, spatial--scenario cross-tabulation
+    \item Limitations: Duration cap, Precipitation exclusion, Distance exclusion, Severity 2 dominance
+    \item Conclusion: which clusters are most relevant for safety attention
+  \end{itemize}
+
+  \item Keep the limitations section honest. In particular:
+  \begin{itemize}
+    \item acknowledge that Duration capping at 480 min discards real variability in the top 1\% of records
+    \item acknowledge that Precipitation exclusion (20\% missing) may underrepresent rain-related accident patterns
+    \item acknowledge that spatial hotspot shapes are sensitive to the choice of \texttt{eps}
+  \end{itemize}
+
+  \item Compile the PDF from the LaTeX source and verify all figures render correctly.
+
+  \item Commit the following files to the \texttt{topic-3-nyc-accident-clustering} branch:
+  \begin{itemize}
+    \item \texttt{NYC\_Clustering\_SRS.tex} and \texttt{NYC\_Clustering\_SRS.pdf}
+    \item \texttt{NYC\_Clustering\_Execution\_Plan.tex} and PDF
+    \item \texttt{li\_clustering.R} (or \texttt{li\_clustering.Rmd})
+    \item \texttt{output/} subfolder with all figures, tables, and the labeled CSV
+    \item \texttt{li\_accidents\_clean.csv} (if not already committed)
+  \end{itemize}
+
+  \item Push the branch to the remote repository once the repository owner has added the contributor.
+\end{enumerate}
+
+\subsection{Done Criteria}
+
+\begin{itemize}
+  \item The final report PDF compiles without errors.
+  \item All figures are embedded and readable.
+  \item The branch is clean and the commit message describes the submission state clearly.
+  \item The work addresses all five SRS research questions.
+\end{itemize}
+
+% -------------------------------------------------------
+\newpage
+\section{Phase Summary Table}
+
+\begin{longtable}{|p{0.5cm}|p{3cm}|p{6.5cm}|p{4.5cm}|}
+\hline
+\textbf{\#} & \textbf{Phase} & \textbf{Key Output} & \textbf{Done Signal} \\
+\hline
+1 & Environment Setup & Clean R project, packages installed, seed set & Script runs from cold start \\
+\hline
+2 & Data Profiling & Missingness table, anomaly confirmation & All expected row/column counts verified \\
+\hline
+3 & Feature Engineering & \texttt{hour\_band}, \texttt{season}, \texttt{weather\_group}, \texttt{log\_Duration}, wind normalization & Zero NAs in all engineered features \\
+\hline
+4 & Build Input Matrices & \texttt{df\_scenario} (no leakage), \texttt{df\_spatial} (km coords) & Both matrices have 33,375 rows, zero NAs \\
+\hline
+5 & k-Prototypes Clustering & Six candidate solutions, elbow plot & No crashes; cluster sizes tabulated \\
+\hline
+6 & Validation \& Stability & Selected $k$, Jaccard summary, cluster profiles & One defensible solution with working names \\
+\hline
+7 & DBSCAN Spatial & Corridor hotspot clusters, kNN plot, map & 3--15 clusters, 5--30\% noise, corridor shapes confirmed \\
+\hline
+8 & Interpretation & Severity/county/weather tables, spatial--scenario cross-tab, final names & All SRS research questions answered \\
+\hline
+9 & Export & Figures, tables, labeled CSV & All outputs in \texttt{output/} folder \\
+\hline
+10 & Report \& Submission & Final LaTeX report, PDF, committed branch & PDF compiles, branch is clean \\
+\hline
+\end{longtable}
+
+% -------------------------------------------------------
+\section{Variable Decision Reference}
+
+The following table provides a single-source-of-truth for every variable decision made in this execution plan.
+
+\begin{longtable}{|p{4cm}|p{2.5cm}|p{7cm}|}
+\hline
+\textbf{Variable} & \textbf{Decision} & \textbf{Reason} \\
+\hline
+\texttt{hour\_band} & Include & Key temporal feature, derived from Start\_Time \\
+\hline
+\texttt{weekday} & Include & Commuter vs non-commuter pattern signal \\
+\hline
+\texttt{weekend} & Include & Captures Saturday/Sunday off-peak behavior \\
+\hline
+\texttt{season} & Include & Weather-linked seasonal variation \\
+\hline
+\texttt{rush\_hour} & Include & Direct commuter proxy \\
+\hline
+\texttt{Sunrise\_Sunset} & Include & Day/Night is a strong accident context variable \\
+\hline
+\texttt{weather\_group} & Include & Collapsed Weather\_Condition; reduces sparsity \\
+\hline
+\texttt{Temperature(F)} & Include & Numeric, no missing, strong season proxy \\
+\hline
+\texttt{Humidity(\%)} & Include & Numeric, no missing \\
+\hline
+\texttt{Pressure(in)} & Include & Numeric; 1.8\% mild IQR outliers are physically valid \\
+\hline
+\texttt{Visibility(mi)} & Include & Key safety variable; low-visibility records are real events \\
+\hline
+\texttt{Wind\_Speed(mph)} & Include & Numeric; 2.4\% high outliers are physically plausible \\
+\hline
+\texttt{Crossing} & Include & 10.1\% TRUE; meaningful road context \\
+\hline
+\texttt{Junction} & Include & 16.0\% TRUE; strongest road context flag \\
+\hline
+\texttt{Traffic\_Signal} & Include & 9.5\% TRUE; distinguishes surface roads from highways \\
+\hline
+\texttt{Stop} & Include & 1.0\% TRUE; low but non-trivial; kept as marginal signal \\
+\hline
+\texttt{log\_Duration} & Include (conditional) & After cap at 480 min; carries incident severity signal \\
+\hline
+\texttt{Precipitation(in)} & Exclude & 20.1\% missing; too high for routine imputation \\
+\hline
+\texttt{Wind\_Chill(F)} & Exclude & 15.0\% missing; redundant with Temperature \\
+\hline
+\texttt{Distance(mi)} & Exclude & 35.1\% zeros; reporting artifact, not scenario signal \\
+\hline
+\texttt{Amenity} & Exclude & 0.34\% TRUE; near-zero variance \\
+\hline
+\texttt{Give\_Way} & Exclude & 0.9\% TRUE; near-zero variance \\
+\hline
+\texttt{Station} & Exclude & 0.7\% TRUE; near-zero variance \\
+\hline
+\texttt{Railway} & Exclude & 0.15\% TRUE; near-zero variance \\
+\hline
+\texttt{Bump} & Exclude & 0.0\% TRUE; zero variance \\
+\hline
+\texttt{Roundabout} & Exclude & 0.0\% TRUE; zero variance \\
+\hline
+\texttt{Turning\_Loop} & Exclude & 0.0\% TRUE; zero variance \\
+\hline
+\texttt{Traffic\_Calming} & Exclude & 0.0\% TRUE; zero variance \\
+\hline
+\texttt{No\_Exit} & Exclude & 0.0\% TRUE; zero variance \\
+\hline
+\texttt{Severity} & Post-cluster only & Leakage risk; profile after clustering \\
+\hline
+\texttt{County} & Post-cluster only & Use for Nassau/Suffolk comparison after clustering \\
+\hline
+\texttt{Start\_Lat / Start\_Lng} & Spatial only & Used only in df\_spatial for DBSCAN \\
+\hline
+\texttt{End\_Lat / End\_Lng} & Exclude & 39.2\% missing \\
+\hline
+\texttt{ID, Source, Description, Street, City, Zipcode, nzip} & Exclude & Identifiers and free text; no clustering value \\
+\hline
+\end{longtable}
+
+\end{document}
