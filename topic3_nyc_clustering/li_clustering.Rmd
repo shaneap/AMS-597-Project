@@ -1400,6 +1400,11 @@ dbscan_eps_grid <- seq(0.3, 2.0, by = 0.1)
 
 knn_dist <- dbscan::kNNdist(df_spatial, k = knn_k)
 knn_sorted <- sort(knn_dist)
+phase7_total_rows <- nrow(df_spatial)
+phase7_target_cluster_n <- 8L
+phase7_target_noise_pct <- 17.5
+phase7_max_cluster_share_cap <- 60
+
 knn_profile <- data.table(
   quantile = c("50%", "75%", "90%", "95%", "97.5%", "99%"),
   value_km = round(as.numeric(quantile(knn_dist, probs = c(0.5, 0.75, 0.9, 0.95, 0.975, 0.99))), 4)
@@ -1420,7 +1425,10 @@ eps_trials <- rbindlist(
         non_noise_clusters = non_noise_clusters,
         noise_pct = noise_pct,
         max_cluster_size = if (length(non_noise_sizes)) max(as.integer(non_noise_sizes)) else 0L,
-        acceptable = non_noise_clusters >= 3 & non_noise_clusters <= 15 & noise_pct >= 5 & noise_pct <= 30
+        max_cluster_share_pct = if (length(non_noise_sizes)) round(100 * max(as.integer(non_noise_sizes)) / phase7_total_rows, 2) else 0,
+        size_balance_ok = if (length(non_noise_sizes)) round(100 * max(as.integer(non_noise_sizes)) / phase7_total_rows, 2) <= phase7_max_cluster_share_cap else FALSE,
+        acceptable = non_noise_clusters >= 3 & non_noise_clusters <= 15 & noise_pct >= 5 & noise_pct <= 30 &
+          if (length(non_noise_sizes)) round(100 * max(as.integer(non_noise_sizes)) / phase7_total_rows, 2) <= phase7_max_cluster_share_cap else FALSE
       )
     }))
   }),
@@ -1431,14 +1439,14 @@ acceptable_trials <- eps_trials[acceptable == TRUE]
 
 if (nrow(acceptable_trials) > 0) {
   selected_trial <- acceptable_trials[
-    order(abs(non_noise_clusters - 8), abs(noise_pct - 17.5), -minPts, eps)
+    order(abs(non_noise_clusters - phase7_target_cluster_n), abs(noise_pct - phase7_target_noise_pct), max_cluster_share_pct, -minPts, eps)
   ][1]
-  selection_reason <- "Accepted trial closest to 8 clusters and mid-range noise target"
+  selection_reason <- "Accepted trial balancing cluster count, noise level, and hotspot size concentration"
 } else {
   selected_trial <- eps_trials[
-    order(abs(non_noise_clusters - 8), abs(noise_pct - 17.5), -minPts, eps)
+    order(abs(non_noise_clusters - phase7_target_cluster_n), abs(noise_pct - phase7_target_noise_pct), max_cluster_share_pct, -minPts, eps)
   ][1]
-  selection_reason <- "Fallback trial closest to balanced cluster count and noise target"
+  selection_reason <- "Fallback trial closest to balanced cluster count, noise level, and hotspot size concentration"
 }
 
 eps_chosen <- selected_trial$eps[[1]]
@@ -1449,20 +1457,24 @@ parameter_summary <- data.table(
     "kNN distance k",
     "DBSCAN minPts grid",
     "DBSCAN eps grid",
+    "Largest cluster share cap (%)",
     "DBSCAN minPts",
     "Chosen eps (km)",
     "Chosen non-noise clusters",
     "Chosen noise pct",
+    "Chosen largest cluster share pct",
     "Selection reason"
   ),
   value = c(
     knn_k,
     paste(dbscan_minpts_grid, collapse = ", "),
     paste(range(dbscan_eps_grid), collapse = " to "),
+    phase7_max_cluster_share_cap,
     minPts_chosen,
     eps_chosen,
     selected_trial$non_noise_clusters[[1]],
     selected_trial$noise_pct[[1]],
+    selected_trial$max_cluster_share_pct[[1]],
     selection_reason
   )
 )
@@ -1513,24 +1525,30 @@ df_spatial_clusters <- copy(df_spatial)
 df_spatial_clusters[, spatial_cluster := as.integer(db_result$cluster)]
 
 spatial_cluster_sizes <- df_spatial_clusters[, .N, by = spatial_cluster][order(spatial_cluster)]
+largest_non_noise_size <- max(spatial_cluster_sizes[spatial_cluster > 0, N], na.rm = TRUE)
+largest_non_noise_share_pct <- round(100 * largest_non_noise_size / nrow(df_spatial_clusters), 2)
 solution_summary <- data.table(
   metric = c(
     "Rows clustered",
     "Noise pct",
     "Non-noise clusters",
     "Largest cluster size",
+    "Largest cluster share pct",
     "Meets SRS cluster-count target",
-    "Meets SRS noise target"
+    "Meets SRS noise target",
+    "Meets hotspot-balance target"
   ),
   value = c(
     nrow(df_spatial_clusters),
     round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2),
     uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]),
-    max(spatial_cluster_sizes[spatial_cluster > 0, N], na.rm = TRUE),
+    largest_non_noise_size,
+    largest_non_noise_share_pct,
     uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]) >= 3 &
       uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]) <= 15,
     round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2) >= 5 &
-      round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2) <= 30
+      round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2) <= 30,
+    largest_non_noise_share_pct <= phase7_max_cluster_share_cap
   )
 )
 
@@ -1621,6 +1639,62 @@ ggplot2::ggsave(
 )
 ```
 
+```{r phase-7-spatial-density-heatmap, fig.height=5.5, fig.width=8}
+spatial_density_heatmap <- ggplot2::ggplot(
+  df_spatial_plot,
+  ggplot2::aes(
+    x = x_km,
+    y = y_km,
+    fill = after_stat(log10(count + 1))
+  )
+) +
+  ggplot2::geom_bin2d(bins = 100) +
+  ggplot2::geom_point(
+    data = non_noise_assignments,
+    ggplot2::aes(x = centroid_x_km, y = centroid_y_km),
+    inherit.aes = FALSE,
+    shape = 21,
+    size = 2.6,
+    stroke = 0.5,
+    fill = "white",
+    color = "black"
+  ) +
+  ggplot2::geom_text(
+    data = non_noise_assignments,
+    ggplot2::aes(x = centroid_x_km, y = centroid_y_km, label = spatial_cluster),
+    inherit.aes = FALSE,
+    size = 3,
+    fontface = "bold",
+    nudge_y = 0.6
+  ) +
+  ggplot2::scale_fill_viridis_c(
+    option = "C",
+    name = "log10(bin\ncount + 1)"
+  ) +
+  ggplot2::coord_equal() +
+  ggplot2::labs(
+    title = "Phase 7 Long Island Spatial Density Heatmap",
+    subtitle = "Heat intensity shows accident concentration; numbered markers show hotspot centroids",
+    x = "Projected x (km)",
+    y = "Projected y (km)"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold"),
+    panel.grid.minor = ggplot2::element_blank()
+  )
+
+print(spatial_density_heatmap)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase7_spatial_density_heatmap.png"),
+  plot = spatial_density_heatmap,
+  width = 8,
+  height = 5.5,
+  dpi = 300
+)
+```
+
 ```{r phase-7-summary}
 phase_7_summary <- data.table(
   checkpoint = c(
@@ -1628,14 +1702,16 @@ phase_7_summary <- data.table(
     "eps trials saved",
     "DBSCAN solution created",
     "Corridor assignments saved",
-    "Spatial hotspot map saved"
+    "Spatial hotspot map saved",
+    "Spatial density heatmap saved"
   ),
   status = c(
     file.exists(file.path(output_dir, "phase7_knn_distance_plot.png")),
     file.exists(file.path(output_dir, "phase7_eps_trials.csv")),
     exists("db_result"),
     file.exists(file.path(output_dir, "phase7_corridor_assignments.csv")),
-    file.exists(file.path(output_dir, "phase7_spatial_hotspot_map.png"))
+    file.exists(file.path(output_dir, "phase7_spatial_hotspot_map.png")),
+    file.exists(file.path(output_dir, "phase7_spatial_density_heatmap.png"))
   )
 )
 
@@ -1692,6 +1768,7 @@ knitr::kable(label_join_check, caption = "Phase 8 label join check")
 
 ```{r phase-8-severity-profile}
 dataset_sev4_pct <- round(100 * mean(as.integer(df_clustered$Severity) == 4), 2)
+dataset_sev34_pct <- round(100 * mean(as.integer(df_clustered$Severity) %in% c(3, 4)), 2)
 
 scenario_severity_profile <- df_clustered[, .(
   n = .N,
@@ -1702,7 +1779,10 @@ scenario_severity_profile <- df_clustered[, .(
   sev34_pct = round(100 * mean(as.integer(Severity) %in% c(3, 4)), 2)
 ), by = scenario_cluster][order(scenario_cluster)]
 
-scenario_severity_profile[, high_risk_archetype := sev4_pct > (2 * dataset_sev4_pct)]
+scenario_severity_profile[, high_risk_archetype := (
+  sev4_pct >= (1.5 * dataset_sev4_pct) |
+    sev34_pct == max(sev34_pct)
+)]
 
 fwrite(scenario_severity_profile, file.path(output_dir, "phase8_scenario_severity_profile.csv"))
 
@@ -1814,8 +1894,13 @@ scenario_final_names <- merge(
 scenario_final_names[, final_name := dplyr::case_when(
   dominant_weather_group == "Snow_Ice" ~ "Winter Adverse --- Snow and Ice",
   night_pct >= 50 & dominant_weather_group %in% c("Fog_Haze", "Rain", "Thunderstorm") ~ "Night Low-Visibility --- Fog and Rain",
+  night_pct >= 50 & dominant_hour_band == "Early_AM" ~ paste(
+    "Night / Early AM ---",
+    gsub("_", " ", dominant_weather_group)
+  ),
   weekend_pct >= 40 & traffic_signal_pct >= 8 ~ "Weekend Surface Road --- Signal Heavy",
   dominant_hour_band %in% c("AM_Rush", "PM_Rush") & junction_pct >= 10 ~ paste(
+    gsub("_", " ", dominant_weather_group),
     gsub("_", " ", dominant_hour_band),
     "--- Junction Heavy"
   ),
@@ -1832,6 +1917,11 @@ scenario_final_names[, final_name := ifelse(
   paste(final_name, "(High Risk)"),
   final_name
 )]
+
+duplicate_scenario_names <- scenario_final_names[, .N, by = final_name][N > 1, final_name]
+if (length(duplicate_scenario_names) > 0) {
+  scenario_final_names[final_name %in% duplicate_scenario_names, final_name := paste0(final_name, " (S", scenario_cluster, ")")]
+}
 
 spatial_final_names <- rbind(
   data.table(
@@ -1859,6 +1949,28 @@ names(spatial_name_map) <- spatial_final_names$spatial_cluster
 df_clustered[, scenario_cluster_name := scenario_name_map[as.character(scenario_cluster)]]
 df_clustered[, spatial_cluster_name := spatial_name_map[as.character(spatial_cluster)]]
 
+if ("working_name" %in% names(spatial_scenario_crosstab)) {
+  spatial_scenario_crosstab[, working_name := NULL]
+}
+spatial_scenario_crosstab <- merge(
+  spatial_scenario_crosstab,
+  scenario_final_names[, .(scenario_cluster, final_name)],
+  by = "scenario_cluster",
+  all.x = TRUE
+)
+
+spatial_scenario_dominance <- merge(
+  spatial_scenario_dominance[, !c("dominant_scenario_name"), with = FALSE],
+  scenario_final_names[, .(scenario_cluster, final_name)],
+  by.x = "dominant_scenario_cluster",
+  by.y = "scenario_cluster",
+  all.x = TRUE
+)
+data.table::setnames(spatial_scenario_dominance, "final_name", "dominant_scenario_name")
+
+fwrite(spatial_scenario_crosstab, file.path(output_dir, "phase8_spatial_scenario_crosstab.csv"))
+fwrite(spatial_scenario_dominance, file.path(output_dir, "phase8_spatial_scenario_dominance.csv"))
+
 fwrite(scenario_final_names, file.path(output_dir, "phase8_scenario_final_names.csv"))
 fwrite(spatial_final_names, file.path(output_dir, "phase8_spatial_final_names.csv"))
 
@@ -1874,7 +1986,8 @@ phase_8_summary <- data.table(
     "County profile saved",
     "Weather-time profile saved",
     "Spatial-scenario cross-tab saved",
-    "Final cluster names saved"
+    "Final cluster names saved",
+    "Scenario names are unique"
   ),
   status = c(
     file.exists(file.path(output_dir, "phase8_label_join_check.csv")),
@@ -1883,7 +1996,8 @@ phase_8_summary <- data.table(
     file.exists(file.path(output_dir, "phase8_scenario_weather_time_profile.csv")),
     file.exists(file.path(output_dir, "phase8_spatial_scenario_crosstab.csv")),
     file.exists(file.path(output_dir, "phase8_scenario_final_names.csv")) &
-      file.exists(file.path(output_dir, "phase8_spatial_final_names.csv"))
+      file.exists(file.path(output_dir, "phase8_spatial_final_names.csv")),
+    uniqueN(scenario_final_names$final_name) == nrow(scenario_final_names)
   )
 )
 
@@ -2089,6 +2203,57 @@ ggplot2::ggsave(
   plot = heatmap_plot,
   width = 8,
   height = 5.5,
+  dpi = 300
+)
+```
+
+```{r phase-9-spatial-cluster-facets, fig.height=7, fig.width=9}
+top_spatial_clusters <- non_noise_assignments[order(-cluster_size)][1:min(.N, 6), spatial_cluster]
+
+spatial_cluster_heatmap_data <- merge(
+  df_spatial_plot[spatial_cluster %in% top_spatial_clusters],
+  spatial_final_names[, .(spatial_cluster, final_name)],
+  by = "spatial_cluster",
+  all.x = TRUE
+)
+
+spatial_cluster_heatmap_data[, final_name_short := wrap_label(final_name, width = 26)]
+
+spatial_cluster_facet_heatmap <- ggplot2::ggplot(
+  spatial_cluster_heatmap_data,
+  ggplot2::aes(
+    x = x_km,
+    y = y_km,
+    fill = after_stat(log10(count + 1))
+  )
+) +
+  ggplot2::geom_bin2d(bins = 50) +
+  ggplot2::scale_fill_viridis_c(
+    option = "D",
+    name = "log10(bin\ncount + 1)"
+  ) +
+  ggplot2::coord_equal() +
+  ggplot2::facet_wrap(~ final_name_short, ncol = 2) +
+  ggplot2::labs(
+    title = "Phase 9 Spatial Cluster Heatmaps",
+    subtitle = "Each panel shows the internal density shape of one of the largest hotspot clusters",
+    x = "Projected x (km)",
+    y = "Projected y (km)"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold"),
+    panel.grid.minor = ggplot2::element_blank(),
+    strip.text = ggplot2::element_text(face = "bold")
+  )
+
+print(spatial_cluster_facet_heatmap)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase9_spatial_cluster_facets_heatmap.png"),
+  plot = spatial_cluster_facet_heatmap,
+  width = 9,
+  height = 7,
   dpi = 300
 )
 ```
@@ -2314,9 +2479,11 @@ figure_exports <- c(
   "phase6_cluster_profiles.pdf",
   "phase7_knn_distance_plot.png",
   "phase7_spatial_hotspot_map.png",
+  "phase7_spatial_density_heatmap.png",
   "phase9_validation_index_plot.png",
   "phase9_stability_plot.png",
   "phase9_spatial_scenario_heatmap.png",
+  "phase9_spatial_cluster_facets_heatmap.png",
   "phase9_scenario_risk_bubble.png",
   "phase9_county_composition.png",
   "phase9_cluster_fingerprint_heatmap.png"
@@ -2364,6 +2531,7 @@ interactive_exports <- data.table(
     "phase9_validation_index_interactive.html",
     "phase9_stability_interactive.html",
     "phase9_spatial_hotspot_interactive.html",
+    "phase9_spatial_density_interactive.html",
     "phase9_scenario_risk_interactive.html",
     "phase9_county_composition_interactive.html",
     "phase9_cluster_fingerprint_interactive.html",
@@ -2375,6 +2543,7 @@ interactive_exports <- data.table(
       "phase9_validation_index_interactive.html",
       "phase9_stability_interactive.html",
       "phase9_spatial_hotspot_interactive.html",
+      "phase9_spatial_density_interactive.html",
       "phase9_scenario_risk_interactive.html",
       "phase9_county_composition_interactive.html",
       "phase9_cluster_fingerprint_interactive.html",
@@ -2424,6 +2593,20 @@ if (interactive_exports_enabled) {
     phase9_validation_index_interactive.html = plotly::ggplotly(validation_plot, tooltip = c("x", "y")),
     phase9_stability_interactive.html = plotly::ggplotly(stability_plot, tooltip = c("x", "y", "fill")),
     phase9_spatial_hotspot_interactive.html = plotly::ggplotly(spatial_map_interactive, tooltip = "text"),
+    phase9_spatial_density_interactive.html = plotly::plot_ly(
+      spatial_interactive_data,
+      x = ~x_km,
+      y = ~y_km,
+      type = "histogram2d",
+      colorscale = "Viridis",
+      nbinsx = 80,
+      nbinsy = 60
+    ) |>
+      plotly::layout(
+        title = "Interactive Spatial Density Heatmap",
+        xaxis = list(title = "Projected x (km)"),
+        yaxis = list(title = "Projected y (km)")
+      ),
     phase9_scenario_risk_interactive.html = plotly::ggplotly(risk_bubble_plot, tooltip = c("x", "y", "size", "colour")),
     phase9_county_composition_interactive.html = plotly::ggplotly(county_plot, tooltip = c("x", "y", "fill")),
     phase9_cluster_fingerprint_interactive.html = plotly::ggplotly(fingerprint_plot, tooltip = c("x", "y", "fill")),
@@ -2454,6 +2637,8 @@ phase_9_summary <- data.table(
     "Validation plot saved",
     "Stability plot saved",
     "Heatmap saved",
+    "Spatial density heatmap saved",
+    "Spatial cluster facet heatmap saved",
     "Scenario risk bubble saved",
     "County composition plot saved",
     "Cluster fingerprint heatmap saved",
@@ -2467,6 +2652,8 @@ phase_9_summary <- data.table(
     file.exists(file.path(figure_dir, "phase9_validation_index_plot.png")),
     file.exists(file.path(figure_dir, "phase9_stability_plot.png")),
     file.exists(file.path(figure_dir, "phase9_spatial_scenario_heatmap.png")),
+    file.exists(file.path(figure_dir, "phase7_spatial_density_heatmap.png")),
+    file.exists(file.path(figure_dir, "phase9_spatial_cluster_facets_heatmap.png")),
     file.exists(file.path(figure_dir, "phase9_scenario_risk_bubble.png")),
     file.exists(file.path(figure_dir, "phase9_county_composition.png")),
     file.exists(file.path(figure_dir, "phase9_cluster_fingerprint_heatmap.png")),
@@ -2702,6 +2889,55 @@ phase_10_summary <- data.table(
 fwrite(phase_10_summary, file.path(output_dir, "phase10_summary.csv"))
 
 knitr::kable(phase_10_summary, caption = "Phase 10 readiness summary")
+```
+
+```{r phase-10-sanity-audit}
+selected_jaccard_value <- suppressWarnings(as.numeric(selected_jaccard))
+
+phase_10_sanity_audit <- data.table(
+  check = c(
+    "Scenario names are unique",
+    "Scenario labels have no gaps",
+    "Spatial labels have no gaps",
+    "Selected scenario stability is at least moderate",
+    "Largest spatial cluster stays below 60% of all rows",
+    "DBSCAN cluster-count target met",
+    "DBSCAN noise target met"
+  ),
+  status = c(
+    uniqueN(scenario_final_names$final_name) == nrow(scenario_final_names),
+    label_join_check[metric == "Scenario label NAs", value][[1]] == 0,
+    label_join_check[metric == "Spatial label NAs", value][[1]] == 0,
+    !is.na(selected_jaccard_value) && selected_jaccard_value >= 0.4,
+    largest_non_noise_share_pct <= phase7_max_cluster_share_cap,
+    uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]) >= 3 &
+      uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]) <= 15,
+    round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2) >= 5 &
+      round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2) <= 30
+  ),
+  note = c(
+    "Final scenario names should be distinct for presentation and discussion.",
+    "Every row should carry a scenario label after the join.",
+    "Every row should carry a spatial label after the join.",
+    "A Jaccard score below 0.4 should be presented as exploratory rather than settled.",
+    "This avoids one hotspot absorbing most of Long Island.",
+    "The SRS target is between 3 and 15 non-noise clusters.",
+    "The SRS target is between 5% and 30% noise."
+  )
+)
+
+fwrite(phase_10_sanity_audit, file.path(output_dir, "phase10_sanity_audit.csv"))
+
+phase_10_summary <- rbind(
+  phase_10_summary,
+  data.table(
+    checkpoint = "Sanity audit saved",
+    status = file.exists(file.path(output_dir, "phase10_sanity_audit.csv"))
+  )
+)
+fwrite(phase_10_summary, file.path(output_dir, "phase10_summary.csv"))
+
+knitr::kable(phase_10_sanity_audit, caption = "Phase 10 sanity audit")
 ```
 
 # Notes for the next phases
