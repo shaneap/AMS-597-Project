@@ -112,10 +112,6 @@ required_packages <- c(
 )
 
 optional_packages <- c("plotly", "htmlwidgets")
-phase9_interactive_mode <- "off"
-interactive_exports_enabled <- identical(phase9_interactive_mode, "on") && all(
-  vapply(optional_packages, requireNamespace, logical(1), quietly = TRUE)
-)
 
 missing_packages <- required_packages[
   !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
@@ -136,11 +132,29 @@ set.seed(42)
 
 input_path <- "../li_accidents_clean.csv"
 output_dir <- "local_artifacts/output"
-phase6_validation_mode <- "sampled"
-phase6_validation_sample_n <- 5000L
-phase6_stability_mode <- "sampled"
-phase6_stability_sample_n <- 3000L
-phase6_stability_bootstraps <- 15L
+run_profile <- "local_safe"
+
+if (!run_profile %in% c("local_safe", "full_srs")) {
+  stop("run_profile must be either 'local_safe' or 'full_srs'.")
+}
+
+phase6_validation_mode <- if (run_profile == "full_srs") "full" else "sampled"
+phase6_validation_sample_n <- if (run_profile == "full_srs") NA_integer_ else 5000L
+phase6_stability_mode <- if (run_profile == "full_srs") "full" else "sampled"
+phase6_stability_sample_n <- if (run_profile == "full_srs") NA_integer_ else 3000L
+phase6_stability_bootstraps <- if (run_profile == "full_srs") 50L else 15L
+phase9_interactive_mode <- "auto"
+
+interactive_exports_enabled <- dplyr::case_when(
+  phase9_interactive_mode == "off" ~ FALSE,
+  phase9_interactive_mode == "on" ~ all(
+    vapply(optional_packages, requireNamespace, logical(1), quietly = TRUE)
+  ),
+  phase9_interactive_mode == "auto" ~ all(
+    vapply(optional_packages, requireNamespace, logical(1), quietly = TRUE)
+  ),
+  TRUE ~ FALSE
+)
 
 if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)
@@ -155,6 +169,7 @@ phase_1_check <- data.frame(
     "Input dataset",
     "Output directory",
     "Seed",
+    "Run profile",
     "Phase 6 validation mode",
     "Phase 6 sample size",
     "Phase 6 stability mode",
@@ -167,12 +182,17 @@ phase_1_check <- data.frame(
     normalizePath(input_path, winslash = "/"),
     normalizePath(output_dir, winslash = "/"),
     "42",
+    run_profile,
     phase6_validation_mode,
-    as.character(phase6_validation_sample_n),
+    ifelse(is.na(phase6_validation_sample_n), "Full data", as.character(phase6_validation_sample_n)),
     phase6_stability_mode,
-    as.character(phase6_stability_sample_n),
+    ifelse(is.na(phase6_stability_sample_n), "Full data", as.character(phase6_stability_sample_n)),
     as.character(phase6_stability_bootstraps),
-    ifelse(interactive_exports_enabled, "Enabled", "Off for safe local runs"),
+    ifelse(
+      interactive_exports_enabled,
+      "Enabled",
+      ifelse(phase9_interactive_mode == "off", "Off for safe local runs", "Packages missing")
+    ),
     normalizePath(".", winslash = "/")
   )
 )
@@ -1190,8 +1210,9 @@ knitr::kable(phase_6_summary, caption = "Phase 6 readiness summary")
 This phase clusters the projected Long Island coordinates with DBSCAN so the workflow can identify corridor-style hotspot zones.
 
 ```{r phase-7-parameter-selection}
-minPts_chosen <- 15L
 knn_k <- 5L
+dbscan_minpts_grid <- if (run_profile == "full_srs") c(15L, 25L, 40L, 50L, 75L, 100L) else c(40L, 50L, 75L, 100L)
+dbscan_eps_grid <- seq(0.3, 2.0, by = 0.1)
 
 knn_dist <- dbscan::kNNdist(df_spatial, k = knn_k)
 knn_sorted <- sort(knn_dist)
@@ -1200,49 +1221,64 @@ knn_profile <- data.table(
   value_km = round(as.numeric(quantile(knn_dist, probs = c(0.5, 0.75, 0.9, 0.95, 0.975, 0.99))), 4)
 )
 
-eps_grid <- seq(0.3, 0.8, by = 0.1)
 eps_trials <- rbindlist(
-  lapply(eps_grid, function(eps_value) {
-    db_trial <- dbscan::dbscan(df_spatial, eps = eps_value, minPts = minPts_chosen)
-    cluster_counts <- table(db_trial$cluster)
-    non_noise_sizes <- cluster_counts[names(cluster_counts) != "0"]
-    non_noise_clusters <- sum(as.integer(names(cluster_counts)) > 0)
-    noise_pct <- round(100 * mean(db_trial$cluster == 0), 2)
+  lapply(dbscan_minpts_grid, function(minPts_value) {
+    rbindlist(lapply(dbscan_eps_grid, function(eps_value) {
+      db_trial <- dbscan::dbscan(df_spatial, eps = eps_value, minPts = minPts_value)
+      cluster_counts <- table(db_trial$cluster)
+      non_noise_sizes <- cluster_counts[names(cluster_counts) != "0"]
+      non_noise_clusters <- sum(as.integer(names(cluster_counts)) > 0)
+      noise_pct <- round(100 * mean(db_trial$cluster == 0), 2)
 
-    data.table(
-      eps = round(eps_value, 2),
-      minPts = minPts_chosen,
-      non_noise_clusters = non_noise_clusters,
-      noise_pct = noise_pct,
-      max_cluster_size = if (length(non_noise_sizes)) max(as.integer(non_noise_sizes)) else 0L,
-      acceptable = non_noise_clusters >= 3 & non_noise_clusters <= 15 & noise_pct >= 5 & noise_pct <= 30
-    )
-  })
+      data.table(
+        eps = round(eps_value, 2),
+        minPts = minPts_value,
+        non_noise_clusters = non_noise_clusters,
+        noise_pct = noise_pct,
+        max_cluster_size = if (length(non_noise_sizes)) max(as.integer(non_noise_sizes)) else 0L,
+        acceptable = non_noise_clusters >= 3 & non_noise_clusters <= 15 & noise_pct >= 5 & noise_pct <= 30
+      )
+    }))
+  }),
+  fill = TRUE
 )
 
 acceptable_trials <- eps_trials[acceptable == TRUE]
 
 if (nrow(acceptable_trials) > 0) {
-  selected_trial <- acceptable_trials[order(abs(noise_pct - 17.5), eps)][1]
-  selection_reason <- "Accepted trial closest to mid-range noise target"
+  selected_trial <- acceptable_trials[
+    order(abs(non_noise_clusters - 8), abs(noise_pct - 17.5), -minPts, eps)
+  ][1]
+  selection_reason <- "Accepted trial closest to 8 clusters and mid-range noise target"
 } else {
-  selected_trial <- eps_trials[order(abs(noise_pct - 17.5), -non_noise_clusters, eps)][1]
-  selection_reason <- "Fallback trial closest to usable noise target"
+  selected_trial <- eps_trials[
+    order(abs(non_noise_clusters - 8), abs(noise_pct - 17.5), -minPts, eps)
+  ][1]
+  selection_reason <- "Fallback trial closest to balanced cluster count and noise target"
 }
 
 eps_chosen <- selected_trial$eps[[1]]
+minPts_chosen <- selected_trial$minPts[[1]]
 
 parameter_summary <- data.table(
   metric = c(
     "kNN distance k",
+    "DBSCAN minPts grid",
+    "DBSCAN eps grid",
     "DBSCAN minPts",
     "Chosen eps (km)",
+    "Chosen non-noise clusters",
+    "Chosen noise pct",
     "Selection reason"
   ),
   value = c(
     knn_k,
+    paste(dbscan_minpts_grid, collapse = ", "),
+    paste(range(dbscan_eps_grid), collapse = " to "),
     minPts_chosen,
     eps_chosen,
+    selected_trial$non_noise_clusters[[1]],
+    selected_trial$noise_pct[[1]],
     selection_reason
   )
 )
@@ -1298,13 +1334,19 @@ solution_summary <- data.table(
     "Rows clustered",
     "Noise pct",
     "Non-noise clusters",
-    "Largest cluster size"
+    "Largest cluster size",
+    "Meets SRS cluster-count target",
+    "Meets SRS noise target"
   ),
   value = c(
     nrow(df_spatial_clusters),
     round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2),
     uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]),
-    max(spatial_cluster_sizes[spatial_cluster > 0, N], na.rm = TRUE)
+    max(spatial_cluster_sizes[spatial_cluster > 0, N], na.rm = TRUE),
+    uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]) >= 3 &
+      uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]) <= 15,
+    round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2) >= 5 &
+      round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2) <= 30
   )
 )
 
@@ -2138,14 +2180,44 @@ interactive_exports <- data.table(
 )
 
 if (interactive_exports_enabled) {
+  spatial_interactive_data <- copy(df_spatial_plot)
+  if (nrow(spatial_interactive_data) > 15000) {
+    set.seed(42)
+    spatial_interactive_data <- spatial_interactive_data[
+      ,
+      .SD[sample(.N, size = min(.N, max(1L, ceiling(15000 * .N / nrow(df_spatial_plot)))))],
+      by = cluster_label
+    ]
+  }
+
+  spatial_map_interactive <- ggplot2::ggplot(
+    spatial_interactive_data,
+    ggplot2::aes(x = x_km, y = y_km, color = cluster_label,
+                 text = paste0(
+                   "Cluster: ", cluster_label,
+                   "<br>x_km: ", round(x_km, 2),
+                   "<br>y_km: ", round(y_km, 2)
+                 ))
+  ) +
+    ggplot2::geom_point(size = 0.6, alpha = 0.7) +
+    ggplot2::scale_color_manual(values = cluster_colors) +
+    ggplot2::labs(
+      title = "Interactive Spatial Hotspot View",
+      subtitle = "Rendered on a representative sample for smoother browsing",
+      x = "Projected x (km)",
+      y = "Projected y (km)",
+      color = "Cluster"
+    ) +
+    ggplot2::theme_minimal()
+
   interactive_widgets <- list(
-    phase9_validation_index_interactive.html = plotly::ggplotly(validation_plot),
-    phase9_stability_interactive.html = plotly::ggplotly(stability_plot),
-    phase9_spatial_hotspot_interactive.html = plotly::ggplotly(spatial_map),
-    phase9_scenario_risk_interactive.html = plotly::ggplotly(risk_bubble_plot),
-    phase9_county_composition_interactive.html = plotly::ggplotly(county_plot),
-    phase9_cluster_fingerprint_interactive.html = plotly::ggplotly(fingerprint_plot),
-    phase9_spatial_scenario_heatmap_interactive.html = plotly::ggplotly(heatmap_plot)
+    phase9_validation_index_interactive.html = plotly::ggplotly(validation_plot, tooltip = c("x", "y")),
+    phase9_stability_interactive.html = plotly::ggplotly(stability_plot, tooltip = c("x", "y", "fill")),
+    phase9_spatial_hotspot_interactive.html = plotly::ggplotly(spatial_map_interactive, tooltip = "text"),
+    phase9_scenario_risk_interactive.html = plotly::ggplotly(risk_bubble_plot, tooltip = c("x", "y", "size", "colour")),
+    phase9_county_composition_interactive.html = plotly::ggplotly(county_plot, tooltip = c("x", "y", "fill")),
+    phase9_cluster_fingerprint_interactive.html = plotly::ggplotly(fingerprint_plot, tooltip = c("x", "y", "fill")),
+    phase9_spatial_scenario_heatmap_interactive.html = plotly::ggplotly(heatmap_plot, tooltip = c("x", "y", "fill"))
   )
 
   invisible(lapply(names(interactive_widgets), function(file_name) {
@@ -2423,9 +2495,10 @@ knitr::kable(phase_10_summary, caption = "Phase 10 readiness summary")
 - Phase 8 now joins cluster labels back to the working data and builds the interpretation tables.
 - Phase 9 now exports the report-ready figures, tables, and labeled dataset.
 - Phase 10 now tracks final report and submission readiness.
+- `run_profile = "local_safe"` is the default for laptop-friendly runs; switch to `"full_srs"` for a stronger machine.
 - The current default uses sampled silhouette validation to stay within local memory limits.
 - The current default also uses sampled stability checks with fewer bootstrap repeats for local runs.
-- Interactive HTML exports are optional and are turned off by default for safer local full runs.
+- Interactive HTML exports are optional and now turn on automatically when the needed packages are available.
 - The original full-data Phase 6 validation and stability calls are archived in `eval=FALSE` chunks for later reruns.
 - Phase 3 and later should write tables, figures, and exports into `local_artifacts/output/`.
 - No `.RData` workspace files are needed for this workflow.
