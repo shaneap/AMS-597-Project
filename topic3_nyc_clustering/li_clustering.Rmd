@@ -132,17 +132,46 @@ set.seed(42)
 
 input_path <- "../li_accidents_clean.csv"
 output_dir <- "local_artifacts/output"
-run_profile <- "local_safe"
+run_profile <- "consensus_16gb"
 
-if (!run_profile %in% c("local_safe", "full_srs")) {
-  stop("run_profile must be either 'local_safe' or 'full_srs'.")
+if (!run_profile %in% c("local_safe", "consensus_16gb", "full_srs")) {
+  stop("run_profile must be one of 'local_safe', 'consensus_16gb', or 'full_srs'.")
 }
 
-phase6_validation_mode <- if (run_profile == "full_srs") "full" else "sampled"
-phase6_validation_sample_n <- if (run_profile == "full_srs") NA_integer_ else 5000L
-phase6_stability_mode <- if (run_profile == "full_srs") "full" else "sampled"
-phase6_stability_sample_n <- if (run_profile == "full_srs") NA_integer_ else 3000L
-phase6_stability_bootstraps <- if (run_profile == "full_srs") 50L else 15L
+phase6_validation_mode <- dplyr::case_when(
+  run_profile == "full_srs" ~ "full",
+  run_profile == "consensus_16gb" ~ "consensus_sampled",
+  TRUE ~ "sampled"
+)
+phase6_validation_sample_n <- dplyr::case_when(
+  run_profile == "full_srs" ~ NA_integer_,
+  run_profile == "consensus_16gb" ~ 4000L,
+  TRUE ~ 5000L
+)
+phase6_validation_repeats <- dplyr::case_when(
+  run_profile == "consensus_16gb" ~ 4L,
+  TRUE ~ 1L
+)
+
+phase6_stability_mode <- dplyr::case_when(
+  run_profile == "full_srs" ~ "full",
+  run_profile == "consensus_16gb" ~ "consensus_sampled",
+  TRUE ~ "sampled"
+)
+phase6_stability_sample_n <- dplyr::case_when(
+  run_profile == "full_srs" ~ NA_integer_,
+  run_profile == "consensus_16gb" ~ 2500L,
+  TRUE ~ 3000L
+)
+phase6_stability_repeats <- dplyr::case_when(
+  run_profile == "consensus_16gb" ~ 3L,
+  TRUE ~ 1L
+)
+phase6_stability_bootstraps <- dplyr::case_when(
+  run_profile == "full_srs" ~ 50L,
+  run_profile == "consensus_16gb" ~ 10L,
+  TRUE ~ 15L
+)
 phase9_interactive_mode <- "auto"
 
 interactive_exports_enabled <- dplyr::case_when(
@@ -172,8 +201,10 @@ phase_1_check <- data.frame(
     "Run profile",
     "Phase 6 validation mode",
     "Phase 6 sample size",
+    "Phase 6 validation repeats",
     "Phase 6 stability mode",
     "Phase 6 stability sample size",
+    "Phase 6 stability repeats",
     "Phase 6 stability bootstraps",
     "Phase 9 interactive mode",
     "Working directory"
@@ -185,8 +216,10 @@ phase_1_check <- data.frame(
     run_profile,
     phase6_validation_mode,
     ifelse(is.na(phase6_validation_sample_n), "Full data", as.character(phase6_validation_sample_n)),
+    as.character(phase6_validation_repeats),
     phase6_stability_mode,
     ifelse(is.na(phase6_stability_sample_n), "Full data", as.character(phase6_stability_sample_n)),
+    as.character(phase6_stability_repeats),
     as.character(phase6_stability_bootstraps),
     ifelse(
       interactive_exports_enabled,
@@ -944,36 +977,94 @@ This phase uses internal validation, bootstrap stability, and cluster profile ch
 ```{r phase-6-internal-validation}
 validation_input <- copy(df_scenario)
 validation_rows <- nrow(df_scenario)
+validation_repeat_results <- NULL
 
-if (identical(phase6_validation_mode, "sampled")) {
-  set.seed(42)
+if (identical(phase6_validation_mode, "consensus_sampled")) {
   validation_rows <- min(phase6_validation_sample_n, nrow(df_scenario))
-  sampled_index <- sort(sample.int(nrow(df_scenario), validation_rows))
-  validation_input <- copy(df_scenario[sampled_index])
+  validation_repeat_results <- rbindlist(
+    lapply(seq_len(phase6_validation_repeats), function(repeat_id) {
+      set.seed(42 + repeat_id)
+      sampled_index <- sort(sample.int(nrow(df_scenario), validation_rows))
+      validation_input_repeat <- copy(df_scenario[sampled_index])
+
+      val_repeat <- clustMixType::validation_kproto(
+        method = "silhouette",
+        data = validation_input_repeat,
+        k = candidate_k,
+        nstart = 5,
+        type = "gower",
+        kp_obj = "all",
+        verbose = FALSE
+      )
+
+      data.table(
+        repeat_id = repeat_id,
+        validation_rows = validation_rows,
+        repeat_k_opt = as.integer(val_repeat$k_opt),
+        k = as.integer(names(val_repeat$indices)),
+        silhouette = as.numeric(val_repeat$indices)
+      )
+    }),
+    fill = TRUE
+  )
+
+  validation_optimal_counts <- unique(
+    validation_repeat_results[, .(repeat_id, repeat_k_opt)]
+  )[, .(optimal_repeat_count = .N), by = .(k = repeat_k_opt)]
+
+  validation_table <- validation_repeat_results[, .(
+    silhouette = mean(silhouette),
+    sd_silhouette = stats::sd(silhouette),
+    median_silhouette = stats::median(silhouette)
+  ), by = k]
+
+  validation_table <- merge(
+    validation_table,
+    validation_optimal_counts,
+    by = "k",
+    all.x = TRUE
+  )
+  validation_table[is.na(optimal_repeat_count), optimal_repeat_count := 0L]
+  validation_table[, optimal_repeat_share := round(optimal_repeat_count / phase6_validation_repeats, 4)]
+  validation_table <- validation_table[order(-optimal_repeat_count, -silhouette, k)]
+  validation_optimal_k <- validation_table$k[1]
+} else {
+  if (identical(phase6_validation_mode, "sampled")) {
+    set.seed(42)
+    validation_rows <- min(phase6_validation_sample_n, nrow(df_scenario))
+    sampled_index <- sort(sample.int(nrow(df_scenario), validation_rows))
+    validation_input <- copy(df_scenario[sampled_index])
+  }
+
+  val_result <- clustMixType::validation_kproto(
+    method = "silhouette",
+    data = validation_input,
+    k = candidate_k,
+    nstart = 5,
+    type = "gower",
+    kp_obj = "all",
+    verbose = FALSE
+  )
+
+  validation_table <- data.table(
+    k = as.integer(names(val_result$indices)),
+    silhouette = as.numeric(val_result$indices),
+    sd_silhouette = NA_real_,
+    median_silhouette = as.numeric(val_result$indices),
+    optimal_repeat_count = 1L,
+    optimal_repeat_share = 1
+  )[order(-silhouette, k)]
+  validation_optimal_k <- as.integer(val_result$k_opt)
 }
 
-val_result <- clustMixType::validation_kproto(
-  method = "silhouette",
-  data = validation_input,
-  k = candidate_k,
-  nstart = 5,
-  type = "gower",
-  kp_obj = "all",
-  verbose = FALSE
-)
-
-validation_table <- data.table(
-  k = as.integer(names(val_result$indices)),
-  silhouette = as.numeric(val_result$indices)
-)[order(-silhouette, k)]
-
 validation_metadata <- data.table(
-  setting = c("validation_mode", "validation_rows", "full_rows", "sample_fraction"),
+  setting = c("validation_mode", "validation_rows", "full_rows", "sample_fraction", "validation_repeats"),
   value = c(
     phase6_validation_mode,
     validation_rows,
     nrow(df_scenario),
-    round(validation_rows / nrow(df_scenario), 4)
+    round(validation_rows / nrow(df_scenario), 4),
+    phase6_validation_repeats
   )
 )
 
@@ -981,9 +1072,15 @@ top_two_k <- head(validation_table$k, 2)
 
 fwrite(validation_table, file.path(output_dir, "phase6_validation_indices.csv"))
 fwrite(validation_metadata, file.path(output_dir, "phase6_validation_metadata.csv"))
+if (!is.null(validation_repeat_results)) {
+  fwrite(validation_repeat_results, file.path(output_dir, "phase6_validation_repeats.csv"))
+}
 
 knitr::kable(validation_table, caption = "Phase 6 internal validation indices")
 knitr::kable(validation_metadata, caption = "Phase 6 validation run settings")
+if (!is.null(validation_repeat_results)) {
+  knitr::kable(validation_repeat_results, caption = "Phase 6 validation repeat detail")
+}
 ```
 
 ```{r phase-6-internal-validation-archived, eval=FALSE, include=FALSE}
@@ -1004,83 +1101,170 @@ val_result_full <- clustMixType::validation_kproto(
 stability_input <- copy(df_scenario)
 stability_rows <- nrow(df_scenario)
 stability_models <- kp_results[as.character(top_two_k)]
+stability_repeat_results <- NULL
+stability_bootstrap <- data.table()
 
-if (identical(phase6_stability_mode, "sampled")) {
-  set.seed(42)
+if (identical(phase6_stability_mode, "consensus_sampled")) {
   stability_rows <- min(phase6_stability_sample_n, nrow(df_scenario))
-  stability_index <- sort(sample.int(nrow(df_scenario), stability_rows))
-  stability_input <- copy(df_scenario[stability_index])
 
-  stability_models <- lapply(top_two_k, function(k_value) {
+  consensus_stability_outputs <- lapply(seq_len(phase6_stability_repeats), function(repeat_id) {
+      set.seed(420 + repeat_id)
+      stability_index <- sort(sample.int(nrow(df_scenario), stability_rows))
+      stability_input_repeat <- copy(df_scenario[stability_index])
+
+      repeat_models <- lapply(top_two_k, function(k_value) {
+        set.seed(420 + repeat_id)
+        clustMixType::kproto(
+          x = stability_input_repeat,
+          k = k_value,
+          lambda = NULL,
+          nstart = 5,
+          type = "gower",
+          keep.data = TRUE,
+          verbose = FALSE
+        )
+      })
+      names(repeat_models) <- as.character(top_two_k)
+
+      repeat_stability_outputs <- lapply(top_two_k, function(k_value) {
+        stab <- clustMixType::stability_kproto(
+          object = repeat_models[[as.character(k_value)]],
+          method = c("rand", "jaccard"),
+          B = phase6_stability_bootstraps,
+          verbose = FALSE,
+          nstart = 5
+        )
+
+        bootstrap_dt <- as.data.table(stab[[2]])
+        bootstrap_dt[, `:=`(k = k_value, repeat_id = repeat_id)]
+
+        list(
+          summary_dt = data.table(
+            repeat_id = repeat_id,
+            k = k_value,
+            rand = as.numeric(stab[[1]]["R"]),
+            jaccard = as.numeric(stab[[1]]["J"])
+          ),
+          bootstrap_dt = bootstrap_dt
+        )
+      })
+
+      list(
+        summary_dt = rbindlist(lapply(repeat_stability_outputs, `[[`, "summary_dt"), fill = TRUE),
+        bootstrap_dt = rbindlist(lapply(repeat_stability_outputs, `[[`, "bootstrap_dt"), fill = TRUE)
+      )
+    })
+
+  stability_repeat_results <- rbindlist(
+    lapply(consensus_stability_outputs, `[[`, "summary_dt"),
+    fill = TRUE
+  )
+  stability_bootstrap <- rbindlist(
+    lapply(consensus_stability_outputs, `[[`, "bootstrap_dt"),
+    fill = TRUE
+  )
+
+  stability_summary <- stability_repeat_results[, .(
+    rand = mean(rand),
+    jaccard = mean(jaccard),
+    sd_rand = stats::sd(rand),
+    sd_jaccard = stats::sd(jaccard),
+    stability_repeats = .N,
+    stable_repeat_share = round(mean(jaccard >= 0.6), 4),
+    strong_repeat_share = round(mean(jaccard >= 0.75), 4),
+    stable_jaccard = mean(jaccard >= 0.6) >= 0.5,
+    strong_jaccard = mean(jaccard >= 0.75) >= 0.5
+  ), by = k][order(-jaccard, -rand, k)]
+} else {
+  if (identical(phase6_stability_mode, "sampled")) {
     set.seed(42)
-    clustMixType::kproto(
-      x = stability_input,
+    stability_rows <- min(phase6_stability_sample_n, nrow(df_scenario))
+    stability_index <- sort(sample.int(nrow(df_scenario), stability_rows))
+    stability_input <- copy(df_scenario[stability_index])
+
+    stability_models <- lapply(top_two_k, function(k_value) {
+      set.seed(42)
+      clustMixType::kproto(
+        x = stability_input,
+        k = k_value,
+        lambda = NULL,
+        nstart = 5,
+        type = "gower",
+        keep.data = TRUE,
+        verbose = FALSE
+      )
+    })
+    names(stability_models) <- as.character(top_two_k)
+  }
+
+  stability_results <- lapply(top_two_k, function(k_value) {
+    set.seed(42)
+    stab <- clustMixType::stability_kproto(
+      object = stability_models[[as.character(k_value)]],
+      method = c("rand", "jaccard"),
+      B = phase6_stability_bootstraps,
+      verbose = FALSE,
+      nstart = 5
+    )
+
+    list(
       k = k_value,
-      lambda = NULL,
-      nstart = 5,
-      type = "gower",
-      keep.data = TRUE,
-      verbose = FALSE
+      summary = stab[[1]],
+      bootstrap = as.data.table(stab[[2]])
     )
   })
-  names(stability_models) <- as.character(top_two_k)
+
+  stability_summary <- rbindlist(
+    lapply(stability_results, function(result) {
+      data.table(
+        k = result$k,
+        rand = as.numeric(result$summary["R"]),
+        jaccard = as.numeric(result$summary["J"]),
+        sd_rand = NA_real_,
+        sd_jaccard = NA_real_,
+        stability_repeats = 1L,
+        stable_repeat_share = as.numeric(result$summary["J"]) >= 0.6,
+        strong_repeat_share = as.numeric(result$summary["J"]) >= 0.75,
+        stable_jaccard = as.numeric(result$summary["J"]) >= 0.6,
+        strong_jaccard = as.numeric(result$summary["J"]) >= 0.75
+      )
+    })
+  )[order(-jaccard, -rand, k)]
+
+  stability_bootstrap <- rbindlist(
+    lapply(stability_results, function(result) {
+      bootstrap_dt <- copy(result$bootstrap)
+      bootstrap_dt[, `:=`(k = result$k, repeat_id = 1L)]
+      bootstrap_dt
+    }),
+    fill = TRUE
+  )
 }
 
 stability_metadata <- data.table(
-  setting = c("stability_mode", "stability_rows", "full_rows", "sample_fraction", "bootstrap_reps"),
+  setting = c("stability_mode", "stability_rows", "full_rows", "sample_fraction", "bootstrap_reps", "stability_repeats"),
   value = c(
     phase6_stability_mode,
     stability_rows,
     nrow(df_scenario),
     round(stability_rows / nrow(df_scenario), 4),
-    phase6_stability_bootstraps
+    phase6_stability_bootstraps,
+    phase6_stability_repeats
   )
-)
-
-stability_results <- lapply(top_two_k, function(k_value) {
-  set.seed(42)
-  stab <- clustMixType::stability_kproto(
-    object = stability_models[[as.character(k_value)]],
-    method = c("rand", "jaccard"),
-    B = phase6_stability_bootstraps,
-    verbose = FALSE,
-    nstart = 5
-  )
-
-  list(
-    k = k_value,
-    summary = stab[[1]],
-    bootstrap = as.data.table(stab[[2]])
-  )
-})
-
-stability_summary <- rbindlist(
-  lapply(stability_results, function(result) {
-    data.table(
-      k = result$k,
-      rand = as.numeric(result$summary["R"]),
-      jaccard = as.numeric(result$summary["J"]),
-      stable_jaccard = as.numeric(result$summary["J"]) >= 0.6,
-      strong_jaccard = as.numeric(result$summary["J"]) >= 0.75
-    )
-  })
-)[order(-jaccard, -rand, k)]
-
-stability_bootstrap <- rbindlist(
-  lapply(stability_results, function(result) {
-    bootstrap_dt <- copy(result$bootstrap)
-    bootstrap_dt[, k := result$k]
-    bootstrap_dt
-  }),
-  fill = TRUE
 )
 
 fwrite(stability_summary, file.path(output_dir, "phase6_stability_summary.csv"))
 fwrite(stability_bootstrap, file.path(output_dir, "phase6_stability_bootstrap.csv"))
 fwrite(stability_metadata, file.path(output_dir, "phase6_stability_metadata.csv"))
+if (!is.null(stability_repeat_results)) {
+  fwrite(stability_repeat_results, file.path(output_dir, "phase6_stability_repeats.csv"))
+}
 
 knitr::kable(stability_summary, caption = "Phase 6 stability summary")
 knitr::kable(stability_metadata, caption = "Phase 6 stability run settings")
+if (!is.null(stability_repeat_results)) {
+  knitr::kable(stability_repeat_results, caption = "Phase 6 stability repeat detail")
+}
 ```
 
 ```{r phase-6-stability-archived, eval=FALSE, include=FALSE}
@@ -1132,7 +1316,7 @@ selection_summary <- data.table(
     phase6_stability_mode,
     stability_rows,
     phase6_stability_bootstraps,
-    val_result$k_opt,
+    validation_optimal_k,
     paste(top_two_k, collapse = ", "),
     selected_k,
     selected_jaccard
@@ -1736,7 +1920,15 @@ knitr::kable(export_setup, caption = "Phase 9 export folders")
 
 ```{r phase-9-validation-plot, fig.height=4.5, fig.width=7}
 selected_validation_point <- validation_table[k == selected_k]
-validation_subtitle <- if (phase6_validation_mode == "sampled") {
+validation_subtitle <- if (phase6_validation_mode == "consensus_sampled") {
+  paste(
+    "Consensus silhouette validation across",
+    phase6_validation_repeats,
+    "repeats of",
+    validation_rows,
+    "rows"
+  )
+} else if (phase6_validation_mode == "sampled") {
   paste("Sampled silhouette validation on", validation_rows, "rows")
 } else {
   "Full-data silhouette validation"
@@ -1819,7 +2011,17 @@ stability_plot <- ggplot2::ggplot(
   ggplot2::geom_hline(yintercept = 0.75, linetype = "dotted", color = "#238b45") +
   ggplot2::labs(
     title = "Phase 9 Stability Summary",
-    subtitle = "Green band = strong stability, yellow = acceptable, red = weak",
+    subtitle = if (phase6_stability_mode == "consensus_sampled") {
+      paste(
+        "Green = strong, yellow = acceptable, red = weak;",
+        phase6_stability_repeats,
+        "repeats with",
+        phase6_stability_bootstraps,
+        "bootstraps each"
+      )
+    } else {
+      "Green band = strong stability, yellow = acceptable, red = weak"
+    },
     x = "k",
     y = "Score",
     fill = "Metric"
@@ -2094,6 +2296,14 @@ table_exports <- list(
   phase8_scenario_final_names = scenario_final_names,
   phase8_spatial_final_names = spatial_final_names
 )
+
+if (!is.null(validation_repeat_results)) {
+  table_exports$phase6_validation_repeats <- validation_repeat_results
+}
+
+if (!is.null(stability_repeat_results)) {
+  table_exports$phase6_stability_repeats <- stability_repeat_results
+}
 
 invisible(lapply(names(table_exports), function(table_name) {
   fwrite(table_exports[[table_name]], file.path(table_dir, paste0(table_name, ".csv")))
@@ -2371,7 +2581,17 @@ phase_10_limitations <- data.table(
     "Precipitation was excluded from the core model because missingness was high enough to make routine imputation less defensible.",
     "Distance(mi) was excluded because the large share of zero values suggests a reporting artifact rather than a stable behavioral feature.",
     "Severity 2 dominates the dataset, so subtle differences among severe crashes can be harder to separate.",
-    "Phase 6 uses sampled silhouette validation by default on this machine to stay within memory limits; the full-data version is archived for a later high-memory rerun.",
+    if (run_profile == "full_srs") {
+      "Phase 6 is configured for full-data validation and stability on a stronger machine, so this setting should only be used when memory is no longer the limiting factor."
+    } else if (run_profile == "consensus_16gb") {
+      paste(
+        "Phase 6 uses repeated sampled validation and repeated sampled stability checks",
+        "to build a consensus choice of k on a 16 GB machine;",
+        "the archived full-data version is still available for a later high-memory rerun."
+      )
+    } else {
+      "Phase 6 uses sampled silhouette validation and sampled stability checks on this machine to stay within local memory limits; the full-data version is archived for a later high-memory rerun."
+    },
     "Spatial hotspot shapes can shift if eps or minPts changes, so corridor labels should be read as data-driven approximations."
   ),
   include_in_final_report = TRUE
@@ -2495,9 +2715,11 @@ knitr::kable(phase_10_summary, caption = "Phase 10 readiness summary")
 - Phase 8 now joins cluster labels back to the working data and builds the interpretation tables.
 - Phase 9 now exports the report-ready figures, tables, and labeled dataset.
 - Phase 10 now tracks final report and submission readiness.
-- `run_profile = "local_safe"` is the default for laptop-friendly runs; switch to `"full_srs"` for a stronger machine.
-- The current default uses sampled silhouette validation to stay within local memory limits.
-- The current default also uses sampled stability checks with fewer bootstrap repeats for local runs.
+- `run_profile = "consensus_16gb"` is the current default in this file.
+- `run_profile = "local_safe"` is the quickest laptop-friendly option.
+- `run_profile = "consensus_16gb"` repeats sampled Phase 6 checks and aggregates them into a consensus choice for 16 GB machines.
+- `run_profile = "full_srs"` is reserved for a stronger machine that can support the full Phase 6 diagnostics.
+- The current default uses repeated sampled validation and repeated sampled stability checks to stay within 16 GB memory limits.
 - Interactive HTML exports are optional and now turn on automatically when the needed packages are available.
 - The original full-data Phase 6 validation and stability calls are archived in `eval=FALSE` chunks for later reruns.
 - Phase 3 and later should write tables, figures, and exports into `local_artifacts/output/`.
