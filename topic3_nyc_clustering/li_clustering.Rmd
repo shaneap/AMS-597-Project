@@ -103,7 +103,7 @@ invisible(lapply(required_packages, library, character.only = TRUE))
 set.seed(42)
 
 input_path <- "../li_accidents_clean.csv"
-output_dir <- "output"
+output_dir <- "local_artifacts/output"
 
 if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)

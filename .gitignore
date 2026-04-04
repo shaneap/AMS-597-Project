@@ -8,3 +8,5 @@ US_Accidents_March23.csv
 *.log
 *.out
 *.toc
+topic3_nyc_clustering/li_clustering.pdf
+topic3_nyc_clustering/local_artifacts/
