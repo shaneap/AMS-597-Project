@@ -63,6 +63,15 @@ mode_value <- function(x) {
 
   names(sort(table(values), decreasing = TRUE))[1]
 }
+
+dominant_share <- function(x) {
+  values <- x[!is.na(x)]
+  if (!length(values)) {
+    return(NA_real_)
+  }
+
+  max(prop.table(table(values)))
+}
 ```
 
 # Phase 1: Environment and Reproducibility Setup
@@ -709,11 +718,170 @@ fwrite(phase_4_summary, file.path(output_dir, "phase4_summary.csv"))
 knitr::kable(phase_4_summary, caption = "Phase 4 matrix readiness summary")
 ```
 
+# Phase 5: k-Prototypes Scenario Clustering
+
+This phase runs the candidate mixed-type clustering solutions on `df_scenario` and stores the diagnostics needed for later model selection.
+
+```{r phase-5-type-check}
+scenario_type_check <- data.table(
+  column = names(df_scenario),
+  class = vapply(df_scenario, function(column) class(column)[1], character(1))
+)
+
+factor_check <- scenario_type_check[column %in% scenario_factor_cols]
+numeric_check <- scenario_type_check[column %in% scenario_numeric_cols]
+
+if (!all(factor_check$class == "factor")) {
+  stop("One or more Phase 5 scenario factor columns are not stored as factors.")
+}
+
+if (!all(numeric_check$class %in% c("numeric", "integer"))) {
+  stop("One or more Phase 5 scenario numeric columns are not stored as numeric values.")
+}
+
+fwrite(scenario_type_check, file.path(output_dir, "phase5_scenario_type_check.csv"))
+
+knitr::kable(scenario_type_check, caption = "Phase 5 scenario type check")
+```
+
+```{r phase-5-kproto-candidates}
+candidate_k <- 3:8
+kp_results <- list()
+
+for (k_value in candidate_k) {
+  set.seed(42)
+  kp_results[[as.character(k_value)]] <- clustMixType::kproto(
+    x = df_scenario,
+    k = k_value,
+    lambda = NULL,
+    nstart = 10,
+    type = "gower",
+    verbose = FALSE
+  )
+}
+```
+
+```{r phase-5-cluster-summaries}
+cluster_fit_summary <- rbindlist(
+  lapply(names(kp_results), function(k_label) {
+    model_fit <- kp_results[[k_label]]
+    cluster_sizes <- table(model_fit$cluster)
+
+    data.table(
+      k = as.integer(k_label),
+      tot_withinss = model_fit$tot.withinss,
+      lambda = model_fit$lambda,
+      min_cluster_size = min(cluster_sizes),
+      max_cluster_size = max(cluster_sizes),
+      n_clusters = length(cluster_sizes),
+      potentially_unstable = min(cluster_sizes) < 200
+    )
+  })
+)
+
+cluster_size_table <- rbindlist(
+  lapply(names(kp_results), function(k_label) {
+    model_fit <- kp_results[[k_label]]
+    data.table(
+      k = as.integer(k_label),
+      cluster = names(table(model_fit$cluster)),
+      size = as.integer(table(model_fit$cluster))
+    )
+  })
+)
+
+dominance_checks <- rbindlist(
+  lapply(names(kp_results), function(k_label) {
+    model_fit <- kp_results[[k_label]]
+    clustered_data <- copy(df_scenario)
+    clustered_data[, cluster := factor(model_fit$cluster)]
+
+    rbindlist(lapply(scenario_factor_cols, function(column_name) {
+      clustered_data[, .(
+        dominant_share = round(dominant_share(get(column_name)), 4)
+      ), by = cluster][
+        , `:=`(
+          k = as.integer(k_label),
+          feature = column_name
+        )
+      ]
+    }), fill = TRUE)
+  }),
+  fill = TRUE
+)
+
+dominance_flags <- dominance_checks[
+  dominant_share >= 0.9
+][order(k, cluster, feature)]
+
+fwrite(cluster_fit_summary, file.path(output_dir, "phase5_kproto_fit_summary.csv"))
+fwrite(cluster_size_table, file.path(output_dir, "phase5_kproto_cluster_sizes.csv"))
+fwrite(dominance_checks, file.path(output_dir, "phase5_kproto_dominance_checks.csv"))
+fwrite(dominance_flags, file.path(output_dir, "phase5_kproto_dominance_flags.csv"))
+
+knitr::kable(cluster_fit_summary, caption = "Phase 5 k-prototypes fit summary")
+knitr::kable(cluster_size_table, caption = "Phase 5 cluster sizes by k")
+```
+
+```{r phase-5-elbow-plot, fig.height=4.5, fig.width=7}
+elbow_plot <- ggplot2::ggplot(
+  cluster_fit_summary,
+  ggplot2::aes(x = k, y = tot_withinss)
+) +
+  ggplot2::geom_line(color = "#1f78b4", linewidth = 0.8) +
+  ggplot2::geom_point(color = "#1f78b4", size = 2.4) +
+  ggplot2::geom_text(
+    ggplot2::aes(label = k),
+    nudge_y = max(cluster_fit_summary$tot_withinss) * 0.01,
+    size = 3.5
+  ) +
+  ggplot2::labs(
+    title = "Phase 5 Elbow Plot",
+    x = "Number of clusters (k)",
+    y = "Total within-cluster distance"
+  ) +
+  ggplot2::theme_minimal()
+
+print(elbow_plot)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase5_kproto_elbow_plot.png"),
+  plot = elbow_plot,
+  width = 7,
+  height = 4.5,
+  dpi = 300
+)
+```
+
+```{r phase-5-summary}
+phase_5_summary <- data.table(
+  checkpoint = c(
+    "Candidate solutions created",
+    "k range covered",
+    "Elbow plot saved",
+    "Cluster sizes recorded",
+    "Dominance checks recorded"
+  ),
+  status = c(
+    length(kp_results) == 6,
+    paste(candidate_k, collapse = ", "),
+    file.exists(file.path(output_dir, "phase5_kproto_elbow_plot.png")),
+    nrow(cluster_size_table) > 0,
+    nrow(dominance_checks) > 0
+  )
+)
+
+fwrite(phase_5_summary, file.path(output_dir, "phase5_summary.csv"))
+
+knitr::kable(phase_5_summary, caption = "Phase 5 readiness summary")
+```
+
 # Notes for the next phases
 
 - Phase 2 should stay read-only and focus on profiling the cleaned dataset.
 - Phase 3 now derives the main engineered features needed for the scenario and spatial matrices.
 - Phase 4 now defines the actual scenario and spatial matrices for clustering.
+- Phase 5 now sets up the candidate k-prototypes runs and their core diagnostics.
 - Phase 3 and later should write tables, figures, and exports into the `output/` folder.
 - No `.RData` workspace files are needed for this workflow.
 
