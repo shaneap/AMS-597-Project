@@ -731,11 +731,11 @@ scenario_type_check <- data.table(
 factor_check <- scenario_type_check[column %in% scenario_factor_cols]
 numeric_check <- scenario_type_check[column %in% scenario_numeric_cols]
 
-if (!all(factor_check$class == "factor")) {
+if (!all(vapply(df_scenario[, ..scenario_factor_cols], is.factor, logical(1)))) {
   stop("One or more Phase 5 scenario factor columns are not stored as factors.")
 }
 
-if (!all(numeric_check$class %in% c("numeric", "integer"))) {
+if (!all(vapply(df_scenario[, ..scenario_numeric_cols], is.numeric, logical(1)))) {
   stop("One or more Phase 5 scenario numeric columns are not stored as numeric values.")
 }
 
