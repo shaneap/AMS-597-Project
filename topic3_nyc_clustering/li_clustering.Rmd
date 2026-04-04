@@ -515,10 +515,205 @@ fwrite(phase_3_summary, file.path(output_dir, "phase3_summary.csv"))
 knitr::kable(phase_3_summary, caption = "Phase 3 feature engineering summary")
 ```
 
+# Phase 4: Build Clustering Input Matrices
+
+This phase constructs the final matrices that will be used by the clustering methods. Nothing outside these matrices should enter the clustering algorithms.
+
+```{r phase-4-scenario-matrix}
+df_scenario_base <- as.data.table(copy(df_phase3))
+
+df_scenario_base[, weekend := factor(
+  weekend,
+  levels = c(FALSE, TRUE),
+  labels = c("FALSE", "TRUE")
+)]
+df_scenario_base[, rush_hour := factor(
+  rush_hour,
+  levels = c(FALSE, TRUE),
+  labels = c("FALSE", "TRUE")
+)]
+df_scenario_base[, Sunrise_Sunset := factor(Sunrise_Sunset)]
+
+scenario_factor_cols <- c(
+  "hour_band", "weekday", "weekend", "season", "rush_hour",
+  "Sunrise_Sunset", "weather_group", "Crossing", "Junction",
+  "Traffic_Signal", "Stop"
+)
+
+scenario_numeric_cols <- c(
+  "Temperature(F)", "Humidity(%)", "Pressure(in)",
+  "Visibility(mi)", "Wind_Speed(mph)"
+)
+
+if (mean(is.na(df_scenario_base$log_Duration)) < 0.05) {
+  scenario_numeric_cols <- c(scenario_numeric_cols, "log_Duration")
+}
+
+scenario_columns <- c(scenario_factor_cols, scenario_numeric_cols)
+
+df_scenario <- df_scenario_base[, ..scenario_columns]
+
+excluded_columns <- c(
+  "Severity", "ID", "Source", "Description", "Street", "City", "Zipcode", "nzip",
+  "Start_Lat", "Start_Lng", "End_Lat", "End_Lng", "County", "Distance(mi)",
+  "Precipitation(in)", "Wind_Chill(F)", "Bump", "Roundabout", "Turning_Loop",
+  "Traffic_Calming", "No_Exit", "Give_Way", "Station", "Railway", "Amenity"
+)
+
+unexpected_excluded <- intersect(names(df_scenario), excluded_columns)
+if (length(unexpected_excluded) > 0) {
+  stop(
+    paste(
+      "Excluded columns were found in df_scenario:",
+      paste(unexpected_excluded, collapse = ", ")
+    )
+  )
+}
+
+numeric_imputation_log <- data.table(
+  column = character(),
+  missing_before = integer(),
+  missing_pct = numeric(),
+  imputation = character()
+)
+
+for (column_name in scenario_numeric_cols) {
+  missing_before <- sum(is.na(df_scenario[[column_name]]))
+  if (!missing_before) {
+    next
+  }
+
+  missing_pct <- 100 * mean(is.na(df_scenario[[column_name]]))
+  median_value <- median(df_scenario[[column_name]], na.rm = TRUE)
+  df_scenario[is.na(get(column_name)), (column_name) := median_value]
+
+  numeric_imputation_log <- rbind(
+    numeric_imputation_log,
+    data.table(
+      column = column_name,
+      missing_before = missing_before,
+      missing_pct = round(missing_pct, 4),
+      imputation = "Median"
+    )
+  )
+}
+
+factor_imputation_log <- data.table(
+  column = character(),
+  missing_before = integer(),
+  rule_applied = character()
+)
+
+for (column_name in scenario_factor_cols) {
+  missing_before <- sum(is.na(df_scenario[[column_name]]))
+  if (!missing_before) {
+    next
+  }
+
+  if (missing_before < 10) {
+    fill_value <- mode_value(df_scenario[[column_name]])
+    df_scenario[is.na(get(column_name)), (column_name) := fill_value]
+    rule_applied <- "Mode"
+  } else {
+    df_scenario[[column_name]] <- addNA(df_scenario[[column_name]])
+    levels(df_scenario[[column_name]])[is.na(levels(df_scenario[[column_name]]))] <- "Unknown"
+    rule_applied <- "Unknown level"
+  }
+
+  factor_imputation_log <- rbind(
+    factor_imputation_log,
+    data.table(
+      column = column_name,
+      missing_before = missing_before,
+      rule_applied = rule_applied
+    )
+  )
+}
+
+scenario_na_total <- sum(is.na(df_scenario))
+if (scenario_na_total > 0) {
+  stop("df_scenario still contains missing values after Phase 4 imputations.")
+}
+
+scenario_column_profile <- data.table(
+  column = names(df_scenario),
+  type = vapply(df_scenario, function(column) class(column)[1], character(1))
+)
+
+scenario_matrix_summary <- data.table(
+  metric = c("Rows", "Columns", "Factor columns", "Numeric columns", "Total NAs"),
+  value = c(
+    nrow(df_scenario),
+    ncol(df_scenario),
+    length(scenario_factor_cols),
+    length(scenario_numeric_cols),
+    scenario_na_total
+  )
+)
+
+fwrite(scenario_column_profile, file.path(output_dir, "phase4_scenario_columns.csv"))
+fwrite(numeric_imputation_log, file.path(output_dir, "phase4_numeric_imputation_log.csv"))
+fwrite(factor_imputation_log, file.path(output_dir, "phase4_factor_imputation_log.csv"))
+fwrite(scenario_matrix_summary, file.path(output_dir, "phase4_scenario_matrix_summary.csv"))
+
+knitr::kable(scenario_matrix_summary, caption = "Phase 4 scenario matrix summary")
+knitr::kable(scenario_column_profile, caption = "Phase 4 scenario column list")
+```
+
+```{r phase-4-spatial-matrix}
+if (any(is.na(df_phase3$Start_Lat)) || any(is.na(df_phase3$Start_Lng))) {
+  stop("Start_Lat or Start_Lng contains missing values, so df_spatial cannot be built.")
+}
+
+lat0 <- 40.8
+lng0 <- -73.2
+
+df_spatial <- data.table(
+  x_km = (df_phase3$Start_Lng - lng0) * 111.32 * cos(lat0 * pi / 180),
+  y_km = (df_phase3$Start_Lat - lat0) * 110.574
+)
+
+spatial_extent <- data.table(
+  metric = c("Rows", "Columns", "x_km min", "x_km max", "x_km span", "y_km min", "y_km max", "y_km span"),
+  value = c(
+    nrow(df_spatial),
+    ncol(df_spatial),
+    min(df_spatial$x_km),
+    max(df_spatial$x_km),
+    diff(range(df_spatial$x_km)),
+    min(df_spatial$y_km),
+    max(df_spatial$y_km),
+    diff(range(df_spatial$y_km))
+  )
+)
+
+if (sum(is.na(df_spatial)) > 0) {
+  stop("df_spatial contains missing values after coordinate projection.")
+}
+
+fwrite(spatial_extent, file.path(output_dir, "phase4_spatial_extent.csv"))
+
+knitr::kable(spatial_extent, caption = "Phase 4 spatial matrix extent")
+```
+
+```{r phase-4-summary}
+phase_4_summary <- data.table(
+  matrix = c("df_scenario", "df_spatial"),
+  rows = c(nrow(df_scenario), nrow(df_spatial)),
+  columns = c(ncol(df_scenario), ncol(df_spatial)),
+  na_count = c(sum(is.na(df_scenario)), sum(is.na(df_spatial)))
+)
+
+fwrite(phase_4_summary, file.path(output_dir, "phase4_summary.csv"))
+
+knitr::kable(phase_4_summary, caption = "Phase 4 matrix readiness summary")
+```
+
 # Notes for the next phases
 
 - Phase 2 should stay read-only and focus on profiling the cleaned dataset.
 - Phase 3 now derives the main engineered features needed for the scenario and spatial matrices.
+- Phase 4 now defines the actual scenario and spatial matrices for clustering.
 - Phase 3 and later should write tables, figures, and exports into the `output/` folder.
 - No `.RData` workspace files are needed for this workflow.
 
