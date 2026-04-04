@@ -9,6 +9,62 @@ output: pdf_document
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
 
+```{r helpers, include=FALSE}
+ordered_weekdays <- c(
+  "Monday", "Tuesday", "Wednesday", "Thursday",
+  "Friday", "Saturday", "Sunday"
+)
+
+weather_group_map <- list(
+  Clear = c("Fair", "Clear", "Fair / Windy"),
+  Cloudy = c(
+    "Mostly Cloudy", "Partly Cloudy", "Scattered Clouds", "Overcast", "Cloudy",
+    "Mostly Cloudy / Windy", "Partly Cloudy / Windy", "Cloudy / Windy"
+  ),
+  Rain = c(
+    "Light Rain", "Rain", "Heavy Rain", "Light Drizzle", "Light Rain / Windy",
+    "Heavy Rain / Windy", "Drizzle"
+  ),
+  Snow_Ice = c(
+    "Light Snow", "Snow", "Heavy Snow", "Wintry Mix",
+    "Light Freezing Rain", "Ice Pellets", "Sleet"
+  ),
+  Fog_Haze = c("Fog", "Haze", "Smoke", "Mist", "Patches of Fog", "Shallow Fog")
+)
+
+normalize_wind_direction <- function(x) {
+  x <- trimws(as.character(x))
+  x_upper <- toupper(x)
+
+  mapped <- dplyr::case_when(
+    x_upper %in% c("N", "NORTH") ~ "N",
+    x_upper %in% c("NE", "NORTHEAST", "NORTH EAST") ~ "NE",
+    x_upper %in% c("E", "EAST") ~ "E",
+    x_upper %in% c("SE", "SOUTHEAST", "SOUTH EAST") ~ "SE",
+    x_upper %in% c("S", "SOUTH") ~ "S",
+    x_upper %in% c("SW", "SOUTHWEST", "SOUTH WEST") ~ "SW",
+    x_upper %in% c("W", "WEST") ~ "W",
+    x_upper %in% c("NW", "NORTHWEST", "NORTH WEST") ~ "NW",
+    x_upper %in% c("CALM", "VARIABLE", "VAR") ~ "Variable_Calm",
+    TRUE ~ "Variable_Calm"
+  )
+
+  factor(
+    mapped,
+    levels = c("N", "NE", "E", "SE", "S", "SW", "W", "NW", "Variable_Calm")
+  )
+}
+
+mode_value <- function(x) {
+  values <- x[!is.na(x)]
+  if (!length(values)) {
+    return(NA_character_)
+  }
+
+  names(sort(table(values), decreasing = TRUE))[1]
+}
+```
+
 # Phase 1: Environment and Reproducibility Setup
 
 This file is the main reproducible workflow for the Long Island clustering analysis. It is meant to run from a clean R session and use `li_accidents_clean.csv` as the only project dataset input.
@@ -87,9 +143,382 @@ data_overview <- data.frame(
 knitr::kable(data_overview, caption = "Input file loaded successfully")
 ```
 
+# Phase 2: Data Ingestion and Raw Profiling
+
+This phase stays read-only. The goal is to confirm that the cleaned Long Island dataset matches the expectations in the execution plan before any feature engineering starts.
+
+```{r phase-2-dimension-checks}
+expected_rows <- 33375L
+expected_cols <- 48L
+
+if (nrow(df_raw) != expected_rows || ncol(df_raw) != expected_cols) {
+  stop(
+    paste0(
+      "Unexpected dataset dimensions. Expected ",
+      expected_rows, " rows and ", expected_cols, " columns, got ",
+      nrow(df_raw), " rows and ", ncol(df_raw), " columns."
+    )
+  )
+}
+
+phase_2_dimensions <- data.frame(
+  metric = c("Rows", "Columns"),
+  expected = c(expected_rows, expected_cols),
+  observed = c(nrow(df_raw), ncol(df_raw))
+)
+
+knitr::kable(phase_2_dimensions, caption = "Phase 2 dimension check")
+```
+
+```{r phase-2-county-and-severity}
+county_profile <- as.data.table(df_raw)[, .N, by = County][order(match(County, c("Nassau", "Suffolk", "Queens")))]
+severity_profile <- as.data.table(df_raw)[, .N, by = Severity][order(as.integer(Severity))]
+
+expected_counties <- data.table(
+  County = c("Nassau", "Suffolk", "Queens"),
+  expected_n = c(19390L, 13838L, 147L)
+)
+
+expected_severity <- data.table(
+  Severity = c(1L, 2L, 3L, 4L),
+  expected_n = c(161L, 28357L, 3938L, 919L)
+)
+
+county_check <- merge(expected_counties, county_profile, by = "County", all.x = TRUE)
+severity_check <- merge(
+  expected_severity,
+  severity_profile[, Severity := as.integer(Severity)],
+  by = "Severity",
+  all.x = TRUE
+)
+
+if (any(county_check$expected_n != county_check$N)) {
+  stop("County counts do not match the execution plan expectations.")
+}
+
+if (any(severity_check$expected_n != severity_check$N)) {
+  stop("Severity counts do not match the execution plan expectations.")
+}
+
+fwrite(county_profile, file.path(output_dir, "phase2_county_profile.csv"))
+fwrite(severity_profile, file.path(output_dir, "phase2_severity_profile.csv"))
+
+knitr::kable(county_check, caption = "County profile check")
+knitr::kable(severity_check, caption = "Severity profile check")
+```
+
+```{r phase-2-missingness}
+missingness_profile <- data.table(
+  column = names(df_raw),
+  missing_n = vapply(df_raw, function(column) sum(is.na(column)), integer(1)),
+  missing_pct = round(vapply(df_raw, function(column) mean(is.na(column)) * 100, numeric(1)), 2)
+)[order(-missing_pct, column)]
+
+missingness_focus <- missingness_profile[
+  column %in% c("End_Lat", "End_Lng", "Precipitation(in)", "Wind_Chill(F)")
+]
+
+fwrite(missingness_profile, file.path(output_dir, "phase2_missingness_profile.csv"))
+
+knitr::kable(head(missingness_profile, 12), caption = "Top missingness profile")
+knitr::kable(missingness_focus, caption = "Critical missingness checks")
+```
+
+```{r phase-2-binary-flags}
+binary_flag_profile <- data.table(
+  flag = c("Bump", "Roundabout", "Turning_Loop", "Traffic_Calming", "No_Exit"),
+  true_count = vapply(
+    df_raw[, c("Bump", "Roundabout", "Turning_Loop", "Traffic_Calming", "No_Exit")],
+    function(column) sum(as.logical(column), na.rm = TRUE),
+    integer(1)
+  )
+)
+
+binary_flag_profile[, true_pct := round(100 * true_count / nrow(df_raw), 4)]
+
+fwrite(binary_flag_profile, file.path(output_dir, "phase2_binary_flag_profile.csv"))
+
+knitr::kable(binary_flag_profile, caption = "Near-zero binary flag checks")
+```
+
+```{r phase-2-duration-distance}
+duration_values <- as.numeric(df_raw$Duration_Minutes)
+distance_values <- as.numeric(df_raw[["Distance(mi)"]])
+
+duration_profile <- data.table(
+  metric = c(
+    "Median duration",
+    "Mean duration",
+    "Max duration",
+    "Rows above 1 day",
+    "Rows above 1 week",
+    "99th percentile"
+  ),
+  value = c(
+    median(duration_values, na.rm = TRUE),
+    mean(duration_values, na.rm = TRUE),
+    max(duration_values, na.rm = TRUE),
+    sum(duration_values > 1440, na.rm = TRUE),
+    sum(duration_values > 10080, na.rm = TRUE),
+    as.numeric(quantile(duration_values, 0.99, na.rm = TRUE))
+  )
+)
+
+distance_profile <- data.table(
+  metric = c("Zero-distance rows", "Zero-distance pct", "Max distance"),
+  value = c(
+    sum(distance_values == 0, na.rm = TRUE),
+    100 * mean(distance_values == 0, na.rm = TRUE),
+    max(distance_values, na.rm = TRUE)
+  )
+)
+
+fwrite(duration_profile, file.path(output_dir, "phase2_duration_profile.csv"))
+fwrite(distance_profile, file.path(output_dir, "phase2_distance_profile.csv"))
+
+knitr::kable(duration_profile, caption = "Duration anomaly profile")
+knitr::kable(distance_profile, caption = "Distance profile")
+```
+
+```{r phase-2-wind-and-weather}
+wind_direction_profile <- as.data.table(df_raw)[, .N, by = Wind_Direction][order(-N, Wind_Direction)]
+weather_profile <- as.data.table(df_raw)[, .N, by = Weather_Condition][order(-N, Weather_Condition)]
+
+wind_focus <- wind_direction_profile[
+  Wind_Direction %in% c("N", "North", "S", "South", "E", "East", "W", "West")
+]
+
+fwrite(wind_direction_profile, file.path(output_dir, "phase2_wind_direction_profile.csv"))
+fwrite(weather_profile, file.path(output_dir, "phase2_weather_profile.csv"))
+
+knitr::kable(wind_focus, caption = "Wind direction duplicate label check")
+knitr::kable(head(weather_profile, 12), caption = "Top weather labels")
+```
+
+```{r phase-2-summary}
+profiling_summary <- data.table(
+  finding = c(
+    "Dimensions match the execution plan",
+    "County counts match the Long Island scope",
+    "Severity counts match the execution plan",
+    "End_Lat and End_Lng remain heavily missing",
+    "Precipitation and Wind_Chill remain too sparse for core clustering use",
+    "Five binary roadway flags carry no signal",
+    "Duration still shows extreme right-tail outliers",
+    "Distance includes many zero values",
+    "Wind direction labels need normalization",
+    "Weather labels still need grouping before clustering"
+  ),
+  status = c(
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed"
+  )
+)
+
+fwrite(profiling_summary, file.path(output_dir, "phase2_profiling_summary.csv"))
+
+knitr::kable(profiling_summary, caption = "Phase 2 profiling summary")
+```
+
+# Phase 3: Feature Engineering
+
+This phase derives the analysis-ready fields needed for the clustering inputs while keeping the original cleaned dataset unchanged in `df_raw`.
+
+```{r phase-3-start}
+df_phase3 <- as.data.table(copy(df_raw))
+```
+
+```{r phase-3-temporal-features}
+df_phase3[, Start_Time_Parsed := lubridate::ymd_hms(Start_Time, quiet = TRUE)]
+
+df_phase3[, hour := lubridate::hour(Start_Time_Parsed)]
+df_phase3[, month := lubridate::month(Start_Time_Parsed)]
+df_phase3[, weekday := factor(
+  weekdays(as.Date(Start_Time_Parsed)),
+  levels = ordered_weekdays,
+  ordered = TRUE
+)]
+df_phase3[, weekend := weekdays(as.Date(Start_Time_Parsed)) %in% c("Saturday", "Sunday")]
+df_phase3[, hour_band := dplyr::case_when(
+  hour >= 0 & hour <= 5 ~ "Early_AM",
+  hour >= 6 & hour <= 9 ~ "AM_Rush",
+  hour >= 10 & hour <= 14 ~ "Midday",
+  hour >= 15 & hour <= 18 ~ "PM_Rush",
+  hour >= 19 & hour <= 21 ~ "Evening",
+  hour >= 22 & hour <= 23 ~ "Late_Night",
+  TRUE ~ NA_character_
+)]
+df_phase3[, hour_band := factor(
+  hour_band,
+  levels = c("Early_AM", "AM_Rush", "Midday", "PM_Rush", "Evening", "Late_Night"),
+  ordered = TRUE
+)]
+df_phase3[, season := dplyr::case_when(
+  month %in% c(12L, 1L, 2L) ~ "Winter",
+  month %in% c(3L, 4L, 5L) ~ "Spring",
+  month %in% c(6L, 7L, 8L) ~ "Summer",
+  month %in% c(9L, 10L, 11L) ~ "Fall",
+  TRUE ~ NA_character_
+)]
+df_phase3[, season := factor(
+  season,
+  levels = c("Winter", "Spring", "Summer", "Fall"),
+  ordered = TRUE
+)]
+df_phase3[, rush_hour := hour %in% c(6L, 7L, 8L, 9L, 15L, 16L, 17L, 18L)]
+
+temporal_na_check <- data.table(
+  feature = c("Start_Time_Parsed", "hour", "month", "weekday", "weekend", "hour_band", "season", "rush_hour"),
+  missing_n = c(
+    sum(is.na(df_phase3$Start_Time_Parsed)),
+    sum(is.na(df_phase3$hour)),
+    sum(is.na(df_phase3$month)),
+    sum(is.na(df_phase3$weekday)),
+    sum(is.na(df_phase3$weekend)),
+    sum(is.na(df_phase3$hour_band)),
+    sum(is.na(df_phase3$season)),
+    sum(is.na(df_phase3$rush_hour))
+  )
+)
+
+if (any(temporal_na_check$missing_n > 0)) {
+  stop("Phase 3 temporal feature derivation created unexpected missing values.")
+}
+
+fwrite(temporal_na_check, file.path(output_dir, "phase3_temporal_check.csv"))
+
+knitr::kable(temporal_na_check, caption = "Phase 3 temporal feature check")
+```
+
+```{r phase-3-duration}
+duration_values <- as.numeric(df_phase3$Duration_Minutes)
+duration_cap_99 <- as.numeric(quantile(duration_values, 0.99, na.rm = TRUE))
+df_phase3[, Duration_cap := pmin(duration_values, duration_cap_99)]
+df_phase3[, log_Duration := log1p(Duration_cap)]
+
+duration_engineering_summary <- data.table(
+  metric = c("99th percentile cap", "Median log_Duration", "Max log_Duration"),
+  value = c(
+    duration_cap_99,
+    median(df_phase3$log_Duration, na.rm = TRUE),
+    max(df_phase3$log_Duration, na.rm = TRUE)
+  )
+)
+
+fwrite(duration_engineering_summary, file.path(output_dir, "phase3_duration_engineering.csv"))
+
+knitr::kable(duration_engineering_summary, caption = "Phase 3 duration treatment")
+```
+
+```{r phase-3-weather-group}
+weather_counts <- as.data.table(df_phase3)[, .N, by = Weather_Condition]
+rare_weather <- weather_counts[N < 30, Weather_Condition]
+
+df_phase3[, weather_group := dplyr::case_when(
+  Weather_Condition %in% weather_group_map$Clear ~ "Clear",
+  Weather_Condition %in% weather_group_map$Cloudy ~ "Cloudy",
+  Weather_Condition %in% weather_group_map$Rain ~ "Rain",
+  Weather_Condition %in% weather_group_map$Snow_Ice ~ "Snow_Ice",
+  Weather_Condition %in% weather_group_map$Fog_Haze ~ "Fog_Haze",
+  grepl("Thunder", Weather_Condition, ignore.case = TRUE) ~ "Thunderstorm",
+  Weather_Condition %in% rare_weather ~ "Other",
+  TRUE ~ "Other"
+)]
+
+df_phase3[, weather_group := factor(
+  weather_group,
+  levels = c("Clear", "Cloudy", "Rain", "Snow_Ice", "Fog_Haze", "Thunderstorm", "Other")
+)]
+
+weather_group_profile <- as.data.table(df_phase3)[, .N, by = weather_group][order(-N)]
+fwrite(weather_group_profile, file.path(output_dir, "phase3_weather_group_profile.csv"))
+
+knitr::kable(weather_group_profile, caption = "Phase 3 weather group profile")
+```
+
+```{r phase-3-wind-direction}
+df_phase3[, wind_dir_norm := normalize_wind_direction(Wind_Direction)]
+
+wind_direction_summary <- as.data.table(df_phase3)[, .N, by = wind_dir_norm][order(-N)]
+
+if (length(levels(df_phase3$wind_dir_norm)) > 9) {
+  stop("Phase 3 wind direction normalization produced too many levels.")
+}
+
+fwrite(wind_direction_summary, file.path(output_dir, "phase3_wind_direction_normalized.csv"))
+
+knitr::kable(wind_direction_summary, caption = "Phase 3 normalized wind direction profile")
+```
+
+```{r phase-3-binary-audit}
+zero_variance_flags <- c("Bump", "Roundabout", "Turning_Loop", "Traffic_Calming", "No_Exit")
+near_zero_flags <- c("Give_Way", "Station", "Railway", "Amenity")
+retained_flags <- c("Crossing", "Junction", "Traffic_Signal", "Stop")
+
+binary_audit <- data.table(
+  flag = c(zero_variance_flags, near_zero_flags, retained_flags),
+  true_count = vapply(
+    df_phase3[, c(zero_variance_flags, near_zero_flags, retained_flags), with = FALSE],
+    function(column) sum(as.logical(column), na.rm = TRUE),
+    integer(1)
+  )
+)
+
+binary_audit[, true_pct := round(100 * true_count / nrow(df_phase3), 4)]
+binary_audit[, decision := c(
+  rep("Exclude: zero variance", length(zero_variance_flags)),
+  rep("Exclude: near-zero variance", length(near_zero_flags)),
+  rep("Retain for scenario matrix", length(retained_flags))
+)]
+
+for (flag_name in retained_flags) {
+  df_phase3[, (flag_name) := factor(
+    as.logical(get(flag_name)),
+    levels = c(FALSE, TRUE),
+    labels = c("FALSE", "TRUE")
+  )]
+}
+
+fwrite(binary_audit, file.path(output_dir, "phase3_binary_audit.csv"))
+
+knitr::kable(binary_audit, caption = "Phase 3 binary flag audit")
+```
+
+```{r phase-3-summary}
+phase_3_summary <- data.table(
+  feature_group = c(
+    "Temporal features",
+    "Duration treatment",
+    "Weather grouping",
+    "Wind normalization",
+    "Binary flag audit"
+  ),
+  status = c(
+    "Added hour, hour_band, weekday, weekend, month, season, rush_hour",
+    "Added Duration_cap and log_Duration",
+    "Added weather_group with 7 levels",
+    "Added wind_dir_norm with at most 9 levels",
+    "Marked zero and near-zero flags for exclusion; retained core road-context flags"
+  )
+)
+
+fwrite(phase_3_summary, file.path(output_dir, "phase3_summary.csv"))
+
+knitr::kable(phase_3_summary, caption = "Phase 3 feature engineering summary")
+```
+
 # Notes for the next phases
 
 - Phase 2 should stay read-only and focus on profiling the cleaned dataset.
+- Phase 3 now derives the main engineered features needed for the scenario and spatial matrices.
 - Phase 3 and later should write tables, figures, and exports into the `output/` folder.
 - No `.RData` workspace files are needed for this workflow.
 
