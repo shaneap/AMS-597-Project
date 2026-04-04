@@ -1,0 +1,98 @@
+---
+title: "Long Island Clustering Workflow"
+author: "AMS 597 Project Team"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Phase 1: Environment and Reproducibility Setup
+
+This file is the main reproducible workflow for the Long Island clustering analysis. It is meant to run from a clean R session and use `li_accidents_clean.csv` as the only project dataset input.
+
+```{r phase-1-config}
+required_packages <- c(
+  "data.table",
+  "dplyr",
+  "lubridate",
+  "clustMixType",
+  "dbscan",
+  "cluster",
+  "fpc",
+  "ggplot2",
+  "geosphere",
+  "factoextra",
+  "knitr",
+  "rmarkdown"
+)
+
+missing_packages <- required_packages[
+  !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    paste(
+      "Install these packages before running the full workflow:",
+      paste(missing_packages, collapse = ", ")
+    )
+  )
+}
+
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+set.seed(42)
+
+input_path <- "../li_accidents_clean.csv"
+output_dir <- "output"
+
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+if (!file.exists(input_path)) {
+  stop("Expected input file not found: ", input_path)
+}
+
+phase_1_check <- data.frame(
+  item = c(
+    "Input dataset",
+    "Output directory",
+    "Seed",
+    "Working directory"
+  ),
+  value = c(
+    normalizePath(input_path, winslash = "/"),
+    normalizePath(output_dir, winslash = "/"),
+    "42",
+    normalizePath(".", winslash = "/")
+  )
+)
+
+knitr::kable(phase_1_check, caption = "Phase 1 setup check")
+```
+
+```{r load-data-preview}
+df_raw <- data.table::fread(input_path, showProgress = FALSE)
+
+data_overview <- data.frame(
+  rows = nrow(df_raw),
+  columns = ncol(df_raw),
+  source_file = basename(input_path)
+)
+
+knitr::kable(data_overview, caption = "Input file loaded successfully")
+```
+
+# Notes for the next phases
+
+- Phase 2 should stay read-only and focus on profiling the cleaned dataset.
+- Phase 3 and later should write tables, figures, and exports into the `output/` folder.
+- No `.RData` workspace files are needed for this workflow.
+
+```{r session-info}
+sessionInfo()
+```

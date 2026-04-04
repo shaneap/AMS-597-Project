@@ -61,9 +61,9 @@ project_coords_km <- function(lat, lng) {
   data.frame(lat_km = lat_km, lng_km = lng_km)
 }
 
-raw_data <- fread("NYC_Accidents_March23.csv", na.strings = c("", "NA"))
+raw_data <- fread("../li_accidents_clean.csv", na.strings = c("", "NA"))
 
-nyc <- raw_data %>%
+li_data <- raw_data %>%
   mutate(
     Start_Time = ymd_hms(Start_Time, quiet = TRUE),
     hour = hour(Start_Time),
@@ -94,7 +94,7 @@ nyc <- raw_data %>%
   )
 
 # Scenario clustering intentionally excludes Severity and raw location.
-scenario_data <- nyc %>%
+scenario_data <- li_data %>%
   transmute(
     hour_band,
     weekday = factor(weekday),
@@ -160,14 +160,14 @@ stability_result <- stability_kproto(
 
 print(stability_result)
 
-nyc$scenario_cluster <- factor(scenario_fit$cluster)
+li_data$scenario_cluster <- factor(scenario_fit$cluster)
 
-scenario_profile <- nyc %>%
+scenario_profile <- li_data %>%
   count(scenario_cluster, County, Severity, sort = TRUE)
 
-fwrite(scenario_profile, "NYC_ScenarioCluster_Profile.csv")
+fwrite(scenario_profile, "Li_ScenarioCluster_Profile.csv")
 
-coords <- project_coords_km(nyc$Start_Lat, nyc$Start_Lng)
+coords <- project_coords_km(li_data$Start_Lat, li_data$Start_Lng)
 
 message("Inspect the kNN distance plot and adjust eps if needed")
 kNNdistplot(coords, k = 25)
@@ -176,12 +176,12 @@ abline(h = 0.35, col = "red", lty = 2)
 # Replace eps after visually inspecting the kNN distance elbow.
 hotspot_fit <- dbscan(coords, eps = 0.35, minPts = 25)
 
-nyc$hotspot_cluster <- hotspot_fit$cluster
+li_data$hotspot_cluster <- hotspot_fit$cluster
 
-hotspot_summary <- nyc %>%
+hotspot_summary <- li_data %>%
   count(hotspot_cluster, County, sort = TRUE)
 
-fwrite(hotspot_summary, "NYC_Hotspot_Profile.csv")
-fwrite(as.data.table(nyc), "NYC_Accidents_Clustered.csv")
+fwrite(hotspot_summary, "Li_Hotspot_Profile.csv")
+fwrite(as.data.table(li_data), "Li_Accidents_Clustered.csv")
 
 message("Clustering pipeline finished.")

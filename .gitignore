@@ -2,7 +2,9 @@
 .Rhistory
 .RData
 .Ruserdata
+.DS_Store
 US_Accidents_March23.csv
 *.aux
 *.log
 *.out
+*.toc
