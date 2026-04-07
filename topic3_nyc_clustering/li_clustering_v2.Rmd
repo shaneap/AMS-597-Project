@@ -1571,21 +1571,32 @@ knitr::kable(selection_summary, caption = "Phase 6 k-selection summary")
 ```{r phase-6-reduced-validation}
 # v2.0: Validate reduced-feature k-prototypes candidates.
 # Compares silhouette scores with and without Pressure(in)/Visibility(mi).
+# v2.0: Mirror the same sampling strategy used in the main Phase 6 validation
+# to stay within memory limits. Uses phase6_validation_sample_n rows.
 set.seed(42)
+reduced_val_rows <- min(phase6_validation_sample_n, nrow(df_scenario_reduced))
+reduced_val_input <- if (identical(phase6_validation_mode, "full")) {
+  copy(df_scenario_reduced)
+} else {
+  reduced_sampled_idx <- sort(sample.int(nrow(df_scenario_reduced), reduced_val_rows))
+  copy(df_scenario_reduced[reduced_sampled_idx])
+}
+
+cat("Reduced-feature validation sample size:", nrow(reduced_val_input), "\n")
+
 validation_reduced_raw <- clustMixType::validation_kproto(
   method  = "silhouette",
+  data    = reduced_val_input,
   k       = candidate_k,
-  x       = df_scenario_reduced,
   nstart  = 5,
   type    = "gower",
+  kp_obj  = "all",
   verbose = FALSE
 )
 
-validation_reduced_table <- as.data.table(validation_reduced_raw$indices)
-setnames(
-  validation_reduced_table,
-  c("clusters", "silhouette"),
-  c("k", "silhouette")
+validation_reduced_table <- data.table(
+  k          = as.integer(names(validation_reduced_raw$indices)),
+  silhouette = as.numeric(validation_reduced_raw$indices)
 )
 validation_reduced_table[, feature_set := "reduced"]
 
@@ -1882,16 +1893,16 @@ knitr::kable(
 # v2.0: Test eps sensitivity at selected +/- 0.1 km.
 # Confirms the 12-cluster solution is not highly sensitive to eps.
 eps_test_values <- c(
-  selected_eps - 0.1,
-  selected_eps,
-  selected_eps + 0.1
+  eps_chosen - 0.1,
+  eps_chosen,
+  eps_chosen + 0.1
 )
 
 eps_sensitivity_table <- rbindlist(lapply(eps_test_values, function(eps_test) {
   res <- dbscan::dbscan(
     df_spatial[, .(x_km, y_km)],
     eps    = eps_test,
-    minPts = selected_minPts
+    minPts = minPts_chosen
   )
   n_clusters <- length(unique(res$cluster[res$cluster > 0]))
   noise_pct  <- round(100 * mean(res$cluster == 0), 2)
