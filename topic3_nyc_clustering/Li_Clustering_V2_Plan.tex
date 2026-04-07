@@ -1,0 +1,1154 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{fancyvrb}
+\usepackage{listings}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!8},
+  xleftmargin=4pt,
+  xrightmargin=4pt
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.7em}
+
+\definecolor{passgreen}{RGB}{0,128,0}
+\definecolor{failred}{RGB}{180,0,0}
+\definecolor{warnamber}{RGB}{180,100,0}
+\definecolor{infoBlue}{RGB}{0,70,160}
+
+\newcommand{\pass}{\textcolor{passgreen}{\textbf{PASS}}}
+\newcommand{\fix}{\textcolor{failred}{\textbf{FIX REQUIRED}}}
+\newcommand{\improve}{\textcolor{warnamber}{\textbf{IMPROVE}}}
+\newcommand{\new}{\textcolor{infoBlue}{\textbf{NEW}}}
+\newcommand{\rfile}[1]{\texttt{#1}}
+\newcommand{\rcode}[1]{\texttt{#1}}
+
+\title{Version 2.0 Execution Plan\\Long Island Clustering Workflow\\
+\large Phase-by-Phase Code Correction and Improvement Roadmap\\
+Derived from \texttt{Li\_Clustering\_Audit\_Report.tex}}
+\author{AMS 597 Project Team}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{Purpose and Scope of Version 2.0}
+% ============================================================
+
+This document is the authoritative implementation plan for producing
+\rfile{li\_clustering\_v2.Rmd} from the existing \rfile{li\_clustering.Rmd}.
+It translates every defect and improvement identified in
+\rfile{Li\_Clustering\_Audit\_Report.tex} into precise, line-level code changes
+organized by phase.
+
+\subsection{What Version 2.0 Is and Is Not}
+
+Version 2.0 is a corrected and strengthened copy of the existing workflow.
+It is not a rewrite. Every phase that passed the audit is carried over
+unchanged. Only the components identified as defective or improvable are
+modified. The clustering methodology, feature engineering approach, and overall
+pipeline structure remain the same.
+
+\subsection{Pre-work: Create the v2 File}
+
+Before making any changes, copy the source file:
+
+\begin{lstlisting}
+# In terminal from the project root:
+cp topic3_nyc_clustering/li_clustering.Rmd \
+   topic3_nyc_clustering/li_clustering_v2.Rmd
+\end{lstlisting}
+
+All changes described in this document are applied to
+\rfile{li\_clustering\_v2.Rmd} only. The original
+\rfile{li\_clustering.Rmd} is left untouched as the v1 reference.
+
+\subsection{Change Inventory Summary}
+
+\begin{longtable}{|p{1.2cm}|p{3.5cm}|p{2cm}|p{6.5cm}|}
+\hline
+\textbf{Phase} & \textbf{Change} & \textbf{Priority} & \textbf{What changes} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Phase} & \textbf{Change} & \textbf{Priority} & \textbf{What changes} \\
+\hline
+\endhead
+1 & Profile upgrade & Critical & \rcode{run\_profile <- "consensus\_16gb"} \\
+\hline
+1 & Version header & Low & Add v2.0 label to Rmd YAML title \\
+\hline
+3 & Binary flag encoding & Low & Replace \rcode{factor(..., labels = c("FALSE","TRUE"))} with \rcode{as.factor()} idiom \\
+\hline
+3 & Thunderstorm grouping & Low & Move Thunderstorm from grepl to explicit lookup \\
+\hline
+4 & Feature set sensitivity & High & Add reduced feature matrix (drop \rcode{Pressure(in)} and \rcode{Visibility(mi)}) \\
+\hline
+5 & Elbow plot annotation & Low & Add $R^2$ (variance explained) column to fit summary \\
+\hline
+6 & k-selection diagnostics & High & Add verbose logging block before and after fallback condition \\
+\hline
+6 & Quality gate warning & Critical & Add explicit \rcode{warning()} + printed block when Jaccard or silhouette below threshold \\
+\hline
+6 & Jaccard CI & Medium & Under consensus profile, compute SD of Jaccard across repeats \\
+\hline
+8 & Cluster 2 naming & Medium & Extend naming hierarchy to cover generic midday surface-road pattern \\
+\hline
+8 & Severity 4 explicit column & Medium & Add \rcode{sev4\_rate} to severity profile table with baseline row \\
+\hline
+9 & Stability plot annotation & Medium & Add subtitle to stability chart disclosing red-zone result \\
+\hline
+9 & Feature sensitivity comparison table & High & Export silhouette / Jaccard for full vs.\ reduced feature set \\
+\hline
+10 & Limitations table & Critical & Add explicit row naming cluster quality failure and exploratory status \\
+\hline
+7 & DBSCAN eps sensitivity & Medium & Run two additional trials at eps $= 0.9$ and eps $= 1.1$ \\
+\hline
+7 & Corridor centroid print & Medium & Print centroid lat/lng of each spatial cluster for manual verification \\
+\hline
+\end{longtable}
+
+% ============================================================
+\section{Phase 1: Profile and YAML Changes}
+% ============================================================
+
+\subsection{Change 1-A: Upgrade Run Profile (Critical)}
+
+\textbf{File:} \rfile{li\_clustering\_v2.Rmd}\\
+\textbf{Location:} Line 135 (Phase 1 config chunk \rcode{phase-1-config})\\
+\textbf{Audit source:} Defect 3 in \rfile{Li\_Clustering\_Audit\_Report.tex}
+
+\textbf{Problem:} \rcode{run\_profile <- "local\_safe"} uses a 5{,}000-row
+sample (15\% of data) for validation with one bootstrap repeat.
+Silhouette and Jaccard estimates from 15\% of the data are unreliable.
+The observed Jaccard of 0.1989 may be a sampling artifact.
+
+\textbf{Old code (line 135):}
+\begin{lstlisting}
+run_profile <- "local_safe"
+\end{lstlisting}
+
+\textbf{New code:}
+\begin{lstlisting}
+run_profile <- "consensus_16gb"
+\end{lstlisting}
+
+\textbf{Effect under consensus\_16gb:}
+\begin{itemize}
+\item Validation sample: 4{,}000 rows, 4 repeats, result averaged.
+\item Stability sample: 2{,}500 rows, 3 repeats, 10 bootstraps.
+\item Silhouette and Jaccard will be consensus estimates rather than
+  single-sample point estimates.
+\end{itemize}
+
+\textbf{Memory note:} Under \rcode{consensus\_16gb}, peak memory during
+Phase 6 should not exceed $\approx$8--10 GB. If the machine has less than
+12 GB available to R, set \rcode{mem.maxVSize("12G")} at the top of the
+setup chunk before the Phase 6 chunk runs.
+
+\subsection{Change 1-B: Version Label in YAML (Low)}
+
+\textbf{Location:} Lines 1--6, YAML header.
+
+\textbf{Old code:}
+\begin{lstlisting}
+---
+title: "Long Island Clustering Workflow"
+author: "AMS 597 Project Team"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: pdf_document
+---
+\end{lstlisting}
+
+\textbf{New code:}
+\begin{lstlisting}
+---
+title: "Long Island Clustering Workflow v2.0"
+subtitle: "Corrected and Strengthened --- Based on Audit Report"
+author: "AMS 597 Project Team"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+\end{lstlisting}
+
+% ============================================================
+\section{Phase 3: Feature Engineering Corrections}
+% ============================================================
+
+\subsection{Change 3-A: Binary Flag Factor Encoding (Low)}
+
+\textbf{Location:} Lines 584--590 (chunk \rcode{phase-3-binary-flags})\\
+\textbf{Audit source:} Improvement IP-7
+
+\textbf{Problem:} \rcode{factor(as.logical(x), levels = c(FALSE, TRUE), labels = c("FALSE", "TRUE"))}
+is unconventional. The string labels \rcode{"FALSE"} and \rcode{"TRUE"} are
+indistinguishable by eye from logical values but are character strings,
+which can cause confusion in \rcode{kproto()} distance computation and in
+downstream filtering.
+
+\textbf{Old code (lines 584--590):}
+\begin{lstlisting}
+for (flag_name in retained_flags) {
+  df_phase3[, (flag_name) := factor(
+    as.logical(get(flag_name)),
+    levels = c(FALSE, TRUE),
+    labels = c("FALSE", "TRUE")
+  )]
+}
+\end{lstlisting}
+
+\textbf{New code:}
+\begin{lstlisting}
+for (flag_name in retained_flags) {
+  df_phase3[, (flag_name) := factor(
+    as.logical(get(flag_name)),
+    levels = c(FALSE, TRUE)
+  )]
+}
+\end{lstlisting}
+
+\textbf{Rationale:} Omitting the \rcode{labels} argument causes R to use
+the native \rcode{FALSE} and \rcode{TRUE} factor level names, which are
+standard and unambiguous. The \rcode{kproto()} function handles factor
+columns by level count; the label string values do not affect distance
+computation, but removing the string-label confusion improves code
+transparency and avoids surprising \rcode{=="FALSE"} comparisons elsewhere.
+
+\textbf{Propagation:} The same pattern appears at lines 628--636 in
+Phase 4 where \rcode{weekend} and \rcode{rush\_hour} are converted to
+factor. Apply the identical fix there:
+
+\textbf{Old code (lines 627--636):}
+\begin{lstlisting}
+df_scenario_base[, weekend := factor(
+  weekend,
+  levels = c(FALSE, TRUE),
+  labels = c("FALSE", "TRUE")
+)]
+df_scenario_base[, rush_hour := factor(
+  rush_hour,
+  levels = c(FALSE, TRUE),
+  labels = c("FALSE", "TRUE")
+)]
+\end{lstlisting}
+
+\textbf{New code:}
+\begin{lstlisting}
+df_scenario_base[, weekend := factor(weekend, levels = c(FALSE, TRUE))]
+df_scenario_base[, rush_hour := factor(rush_hour, levels = c(FALSE, TRUE))]
+\end{lstlisting}
+
+\subsection{Change 3-B: Thunderstorm Weather Group (Low)}
+
+\textbf{Location:} \rcode{weather\_group\_map} list in the helpers chunk (lines 18--33)
+and the weather-grouping derivation in Phase 3 (chunk \rcode{phase-3-weather}).\\
+\textbf{Audit source:} Improvement IP-8
+
+\textbf{Problem:} Thunderstorm variants are matched by \rcode{grepl()} as a
+fallback rather than being listed explicitly in \rcode{weather\_group\_map}.
+Variants with spacing differences (e.g., ``Thunder Storm'', ``Thunderstorm / Windy'')
+could be misclassified.
+
+\textbf{New code --- update \rcode{weather\_group\_map} in the helpers chunk:}
+\begin{lstlisting}
+weather_group_map <- list(
+  Clear      = c("Fair", "Clear", "Fair / Windy"),
+  Cloudy     = c(
+    "Mostly Cloudy", "Partly Cloudy", "Scattered Clouds", "Overcast",
+    "Cloudy", "Mostly Cloudy / Windy", "Partly Cloudy / Windy",
+    "Cloudy / Windy"
+  ),
+  Rain       = c(
+    "Light Rain", "Rain", "Heavy Rain", "Light Drizzle",
+    "Light Rain / Windy", "Heavy Rain / Windy", "Drizzle"
+  ),
+  Snow_Ice   = c(
+    "Light Snow", "Snow", "Heavy Snow", "Wintry Mix",
+    "Light Freezing Rain", "Ice Pellets", "Sleet"
+  ),
+  Fog_Haze   = c(
+    "Fog", "Haze", "Smoke", "Mist", "Patches of Fog", "Shallow Fog"
+  ),
+  Thunderstorm = c(
+    "Thunderstorm", "Thunder", "Thunder / Windy",
+    "Thunderstorm / Windy", "Heavy Thunderstorm",
+    "Light Thunderstorm", "Thunderstorms and Rain"
+  )
+)
+\end{lstlisting}
+
+The \rcode{grepl()} Thunderstorm pattern match in the Phase 3 chunk can be
+retained as a final safety net \textit{after} the explicit lookup runs, but
+should only catch truly novel strings rather than serving as the primary
+classification path. Add a comment making this clear.
+
+% ============================================================
+\section{Phase 4: Reduced Feature Set Matrix (New)}
+% ============================================================
+
+\subsection{Change 4-A: Add Reduced Feature Scenario Matrix (High)}
+
+\textbf{Location:} After the existing Phase 4 matrix construction
+(after line $\approx$760, before Phase 5 begins).\\
+\textbf{Audit source:} Improvement IP-1
+
+\textbf{Problem:} \rcode{Pressure(in)} and \rcode{Visibility(mi)} both required
+median imputation. Including imputed values in a distance-based clustering
+method can pull imputed points artificially toward the global median,
+deflating inter-cluster separation. The v2 workflow tests whether removing
+these two features improves silhouette and Jaccard.
+
+\textbf{New chunk to insert --- name it \rcode{phase-4-reduced-scenario-matrix}:}
+\begin{lstlisting}
+# v2.0: Reduced feature matrix for sensitivity analysis.
+# Drops Pressure(in) and Visibility(mi) which required median imputation.
+reduced_numeric_cols <- setdiff(
+  scenario_numeric_cols,
+  c("Pressure(in)", "Visibility(mi)")
+)
+
+df_scenario_reduced <- df_scenario[
+  , c(scenario_factor_cols, reduced_numeric_cols), with = FALSE
+]
+
+# Verify: no NAs, correct column count
+stopifnot(sum(is.na(df_scenario_reduced)) == 0)
+stopifnot(ncol(df_scenario_reduced) ==
+            length(scenario_factor_cols) + length(reduced_numeric_cols))
+
+reduced_matrix_summary <- data.table(
+  item  = c("Rows", "Factor columns", "Numeric columns",
+            "Dropped from full matrix"),
+  value = c(
+    nrow(df_scenario_reduced),
+    length(scenario_factor_cols),
+    length(reduced_numeric_cols),
+    paste(c("Pressure(in)", "Visibility(mi)"), collapse = ", ")
+  )
+)
+knitr::kable(reduced_matrix_summary,
+             caption = "Phase 4 reduced scenario matrix summary")
+\end{lstlisting}
+
+This matrix (\rcode{df\_scenario\_reduced}) will be used in the new Phase 5
+reduced-feature candidate runs. Keep \rcode{df\_scenario} (full feature set)
+intact for the primary pipeline.
+
+% ============================================================
+\section{Phase 5: k-Prototypes Additions}
+% ============================================================
+
+\subsection{Change 5-A: Add Variance-Explained Column to Fit Summary (Low)}
+
+\textbf{Location:} Phase 5 fit diagnostics chunk (lines $\approx$858--918).\\
+\textbf{Audit source:} Phase 5 issues noted in Audit Report.
+
+\textbf{Problem:} The fit summary reports \rcode{tot.withinss} but not
+variance explained ($R^2$). Without $R^2$ the elbow plot has no reference
+scale; a reader cannot tell whether $k=5$ explains 40\% or 70\% of variance.
+
+\textbf{Change:} In the block that builds \rcode{kproto\_fit\_summary},
+add a \rcode{variance\_explained\_pct} column:
+
+\begin{lstlisting}
+# After computing kproto_fit_summary, add R^2 column:
+total_ss <- sum(
+  sapply(scenario_numeric_cols, function(col) {
+    x <- df_scenario[[col]]
+    sum((x - mean(x, na.rm = TRUE))^2, na.rm = TRUE)
+  })
+)
+
+kproto_fit_summary[, variance_explained_pct := round(
+  100 * (1 - tot_withinss / total_ss), 2
+)]
+\end{lstlisting}
+
+\textbf{Note:} This is an approximation because \rcode{tot.withinss} in
+k-prototypes includes both numeric and categorical components. The $R^2$
+computed here applies only to the numeric component and should be
+labelled as ``approximate numeric $R^2$'' in the report.
+
+\subsection{Change 5-B: Add Reduced-Feature Candidate Runs (High)}
+
+\textbf{Location:} After the existing Phase 5 candidate runs block.
+
+\textbf{New chunk --- name it \rcode{phase-5-reduced-kproto}:}
+\begin{lstlisting}
+# v2.0: Run k-prototypes on the reduced feature matrix.
+# Compares cluster quality when imputed features are excluded.
+
+kp_results_reduced <- list()
+for (k_val in candidate_k_values) {
+  set.seed(42)
+  kp_results_reduced[[as.character(k_val)]] <- clustMixType::kproto(
+    x      = df_scenario_reduced,
+    k      = k_val,
+    lambda = NULL,
+    nstart = 10,
+    type   = "gower",
+    keep.data = TRUE,
+    verbose = FALSE
+  )
+}
+
+reduced_fit_summary <- data.table(
+  k = candidate_k_values,
+  tot_withinss = sapply(
+    candidate_k_values,
+    function(k) kp_results_reduced[[as.character(k)]]$tot.withinss
+  ),
+  feature_set = "reduced"
+)
+
+full_fit_summary_labeled <- copy(kproto_fit_summary[, .(k, tot_withinss)])
+full_fit_summary_labeled[, feature_set := "full"]
+
+feature_comparison_fits <- rbind(
+  full_fit_summary_labeled, reduced_fit_summary
+)
+
+fwrite(feature_comparison_fits,
+       file.path(output_dir, "phase5_feature_comparison_fits.csv"))
+
+knitr::kable(feature_comparison_fits,
+             caption = "Phase 5 full vs reduced feature set within-cluster distances")
+\end{lstlisting}
+
+% ============================================================
+\section{Phase 6: Validation and Stability Corrections}
+% ============================================================
+
+\subsection{Change 6-A: k-Selection Diagnostic Logging (High)}
+
+\textbf{Location:} Lines 1284--1329 (chunk \rcode{phase-6-select-k}).\\
+\textbf{Audit source:} Defect 2 in \rfile{Li\_Clustering\_Audit\_Report.tex}
+
+\textbf{Problem:} The current fallback condition silently selects $k$ with
+no printed trace of what was evaluated, what conditions triggered, and
+why the final $k$ was chosen. When the fallback condition involves
+\rcode{NA} extraction or data.table key mismatch, the code fails silently
+and a different $k$ is selected without any diagnostic message.
+
+\textbf{Old code (lines 1284--1289):}
+\begin{lstlisting}
+selected_k <- validation_table$k[1]
+selected_stability <- stability_summary[k == selected_k, jaccard]
+
+if (length(selected_stability) == 1 &&
+    selected_stability < 0.5 &&
+    nrow(stability_summary) > 1) {
+  selected_k <- stability_summary[order(-jaccard, -rand, k)][1, k]
+}
+\end{lstlisting}
+
+\textbf{New code (replace lines 1284--1289):}
+\begin{lstlisting}
+# --- v2.0: Verbose k-selection with explicit diagnostics ---
+validation_optimal_k_raw  <- validation_table$k[1]
+silhouette_at_optimal     <- validation_table$silhouette[1]
+
+cat("=== Phase 6 k-Selection Diagnostics ===\n")
+cat("Silhouette-optimal k        :", validation_optimal_k_raw, "\n")
+cat("Silhouette at optimal k     :", round(silhouette_at_optimal, 4), "\n")
+cat("Silhouette threshold (0.30) :",
+    ifelse(silhouette_at_optimal >= 0.30, "MET", "NOT MET"), "\n\n")
+cat("Stability summary available for k values:",
+    paste(stability_summary$k, collapse = ", "), "\n")
+
+selected_stability <- stability_summary[
+  k == validation_optimal_k_raw, jaccard
+]
+cat("Jaccard at silhouette-optimal k :",
+    ifelse(length(selected_stability) == 1,
+           round(selected_stability, 4), "NOT FOUND (NA)"), "\n")
+cat("Jaccard threshold (0.40)        :",
+    ifelse(length(selected_stability) == 1 && selected_stability >= 0.40,
+           "MET", "NOT MET"), "\n\n")
+
+fallback_triggered <- FALSE
+if (length(selected_stability) == 1 &&
+    !is.na(selected_stability) &&
+    selected_stability < 0.5 &&
+    nrow(stability_summary) > 1) {
+
+  alt_k <- stability_summary[order(-jaccard, -rand, k)][1, k]
+  alt_jaccard <- stability_summary[order(-jaccard, -rand, k)][1, jaccard]
+  cat("Fallback condition met. Evaluating stability-optimal k:", alt_k, "\n")
+  cat("Jaccard at stability-optimal k:", round(alt_jaccard, 4), "\n")
+
+  if (alt_jaccard > selected_stability) {
+    selected_k     <- alt_k
+    fallback_triggered <- TRUE
+    cat("Fallback ACTIVATED: selected_k changed to", selected_k, "\n\n")
+  } else {
+    selected_k <- validation_optimal_k_raw
+    cat("Fallback NOT activated: stability-optimal k has no better Jaccard.\n")
+    cat("Retaining silhouette-optimal k =", selected_k, "\n\n")
+  }
+} else {
+  selected_k <- validation_optimal_k_raw
+  cat("Fallback condition not met. Using silhouette-optimal k =",
+      selected_k, "\n\n")
+}
+cat("FINAL selected_k :", selected_k, "\n")
+cat("========================================\n")
+\end{lstlisting}
+
+\subsection{Change 6-B: Quality Gate Warning Block (Critical)}
+
+\textbf{Location:} Immediately after the k-selection block above
+(after the diagnostic logging, before \rcode{selected\_model} is assigned).\\
+\textbf{Audit source:} Defect 1 in \rfile{Li\_Clustering\_Audit\_Report.tex}
+
+\textbf{New code to insert:}
+\begin{lstlisting}
+# --- v2.0: Explicit cluster quality gate ---
+selected_silhouette <- validation_table[k == selected_k, silhouette]
+selected_jaccard_v2 <- if (selected_k %in% stability_summary$k) {
+  stability_summary[k == selected_k, jaccard]
+} else {
+  NA_real_
+}
+
+sil_pass     <- !is.na(selected_silhouette) && selected_silhouette >= 0.30
+jaccard_pass <- !is.na(selected_jaccard_v2) && selected_jaccard_v2 >= 0.40
+
+quality_gate <- data.table(
+  metric         = c("Silhouette width", "Jaccard stability"),
+  observed       = c(round(selected_silhouette, 4),
+                     round(selected_jaccard_v2, 4)),
+  threshold      = c(0.30, 0.40),
+  pass           = c(sil_pass, jaccard_pass),
+  interpretation = c(
+    ifelse(sil_pass,
+           "Acceptable cluster separation",
+           "Weak cluster separation -- exploratory status"),
+    ifelse(jaccard_pass,
+           "Acceptable bootstrap stability",
+           "Poor bootstrap stability -- exploratory status")
+  )
+)
+
+fwrite(quality_gate, file.path(output_dir, "phase6_quality_gate.csv"))
+knitr::kable(quality_gate, caption = "Phase 6 cluster quality gate")
+
+if (!sil_pass || !jaccard_pass) {
+  warning(paste0(
+    "\n\n*** CLUSTER QUALITY WARNING (v2.0) ***\n",
+    "  Silhouette = ", round(selected_silhouette, 4),
+    " (threshold >= 0.30): ", ifelse(sil_pass, "PASS", "FAIL"), "\n",
+    "  Jaccard    = ", round(selected_jaccard_v2, 4),
+    " (threshold >= 0.40): ", ifelse(jaccard_pass, "PASS", "FAIL"), "\n",
+    "  The selected k = ", selected_k,
+    " scenario clustering solution is EXPLORATORY.\n",
+    "  Do not present discovered clusters as stable accident archetypes.\n",
+    "  Present findings as candidate patterns for hypothesis generation.\n",
+    "***********************************************\n"
+  ))
+}
+\end{lstlisting}
+
+\subsection{Change 6-C: Jaccard Confidence Interval Under Consensus Profile (Medium)}
+
+\textbf{Location:} Phase 6 stability summary block (lines $\approx$1240--1264).\\
+\textbf{Audit source:} Improvement IP-3
+
+\textbf{Problem:} Under \rcode{local\_safe} (one repeat), Jaccard is a single
+point estimate with no variance information. Under \rcode{consensus\_16gb}
+(3 repeats), multiple Jaccard values are available and should be summarized
+with mean and standard deviation.
+
+\textbf{Change:} After building \rcode{stability\_summary}, add:
+\begin{lstlisting}
+# v2.0: If multiple stability repeats are available, compute Jaccard SD
+if (!is.null(stability_repeat_results) && nrow(stability_repeat_results) > 0) {
+  jaccard_ci <- stability_repeat_results[, .(
+    jaccard_mean = round(mean(jaccard, na.rm = TRUE), 4),
+    jaccard_sd   = round(sd(jaccard, na.rm = TRUE), 4),
+    jaccard_min  = round(min(jaccard, na.rm = TRUE), 4),
+    jaccard_max  = round(max(jaccard, na.rm = TRUE), 4),
+    n_repeats    = .N
+  ), by = k]
+
+  fwrite(jaccard_ci, file.path(output_dir, "phase6_jaccard_ci.csv"))
+  knitr::kable(jaccard_ci,
+               caption = "Phase 6 Jaccard stability with confidence range")
+} else {
+  cat("Single bootstrap repeat --- Jaccard CI not available under local_safe.\n")
+}
+\end{lstlisting}
+
+\subsection{Change 6-D: Reduced-Feature Validation (High)}
+
+\textbf{Location:} After the primary validation block, still in Phase 6.
+
+\textbf{Purpose:} Run \rcode{validation\_kproto()} on the reduced-feature
+candidate models to compare silhouette scores with and without
+\rcode{Pressure(in)} and \rcode{Visibility(mi)}.
+
+\textbf{New chunk --- name it \rcode{phase-6-reduced-validation}:}
+\begin{lstlisting}
+# v2.0: Validate reduced-feature k-prototypes candidates
+set.seed(42)
+validation_reduced_raw <- clustMixType::validation_kproto(
+  method  = "silhouette",
+  k       = candidate_k_values,
+  x       = df_scenario_reduced,
+  nstart  = 5,
+  type    = "gower",
+  verbose = FALSE
+)
+
+validation_reduced_table <- as.data.table(validation_reduced_raw$indices)
+setnames(validation_reduced_table,
+         c("clusters", "silhouette"),
+         c("k", "silhouette"))
+setorder(validation_reduced_table, -silhouette)
+validation_reduced_table[, feature_set := "reduced"]
+
+# Combine with full-feature silhouette table for comparison
+validation_full_labeled <- copy(validation_table)[
+  , .(k, silhouette)
+][, feature_set := "full"]
+
+feature_silhouette_comparison <- rbind(
+  validation_full_labeled, validation_reduced_table[, .(k, silhouette, feature_set)]
+)
+setorder(feature_silhouette_comparison, feature_set, -silhouette)
+
+fwrite(feature_silhouette_comparison,
+       file.path(output_dir, "phase6_feature_silhouette_comparison.csv"))
+
+knitr::kable(feature_silhouette_comparison,
+             caption = "Phase 6: Silhouette comparison -- full vs reduced feature set")
+\end{lstlisting}
+
+% ============================================================
+\section{Phase 7: DBSCAN Additions}
+% ============================================================
+
+\subsection{Change 7-A: Print Cluster Centroid Coordinates (Medium)}
+
+\textbf{Location:} After the DBSCAN execution block and before corridor
+label assignment (approximately after line 1564).\\
+\textbf{Audit source:} Improvement IP-2
+
+\textbf{Purpose:} Provide centroid latitude and longitude for each spatial
+cluster so corridor assignments can be verified manually in a mapping tool.
+
+\textbf{New code to insert:}
+\begin{lstlisting}
+# v2.0: Compute and export spatial cluster centroids for corridor verification
+cluster_centroids <- df_spatial[spatial_cluster > 0, .(
+  centroid_x_km  = round(mean(x_km), 4),
+  centroid_y_km  = round(mean(y_km), 4),
+  centroid_lat   = round(
+    40.8 + mean(y_km) / 110.574, 5
+  ),
+  centroid_lng   = round(
+    -73.2 + mean(x_km) / (111.32 * cos(40.8 * pi / 180)), 5
+  ),
+  n_accidents = .N
+), by = spatial_cluster]
+
+setorder(cluster_centroids, spatial_cluster)
+
+fwrite(cluster_centroids,
+       file.path(output_dir, "phase7_cluster_centroids.csv"))
+
+knitr::kable(cluster_centroids,
+  caption = paste(
+    "Phase 7 spatial cluster centroids.",
+    "Verify each centroid against the named corridor.",
+    "Reference: lat0 = 40.8 N, lng0 = 73.2 W."
+  )
+)
+\end{lstlisting}
+
+\textbf{Verification instruction:} After the document renders, open
+\rfile{phase7\_cluster\_centroids.csv} and paste each
+\rcode{centroid\_lat} / \rcode{centroid\_lng} pair into a map. Confirm
+that the point falls on or within $\approx$1 km of the named highway.
+If any assignment is wrong, update the latitude band thresholds at
+approximately lines 1584--1591 of the Rmd and re-render.
+
+\subsection{Change 7-B: eps Sensitivity Check (Medium)}
+
+\textbf{Location:} After the primary DBSCAN run (after line $\approx$1564).\\
+\textbf{Audit source:} Improvement IP-6
+
+\textbf{New chunk --- name it \rcode{phase-7-eps-sensitivity}:}
+\begin{lstlisting}
+# v2.0: Test eps sensitivity at +/- 0.1 km from selected value
+eps_sensitivity_results <- lapply(
+  c(selected_eps - 0.1, selected_eps, selected_eps + 0.1),
+  function(eps_test) {
+    res <- dbscan::dbscan(
+      df_spatial[, .(x_km, y_km)],
+      eps     = eps_test,
+      minPts  = selected_minPts
+    )
+    n_clusters <- length(unique(res$cluster[res$cluster > 0]))
+    noise_pct  <- round(100 * mean(res$cluster == 0), 2)
+    max_share  <- round(100 * max(table(res$cluster[res$cluster > 0])) /
+                          sum(res$cluster > 0), 2)
+    data.table(
+      eps          = eps_test,
+      n_clusters   = n_clusters,
+      noise_pct    = noise_pct,
+      max_cluster_share_pct = max_share,
+      within_srs_targets = (n_clusters >= 3 & n_clusters <= 15 &
+                              noise_pct >= 5 & noise_pct <= 30 &
+                              max_share <= 60)
+    )
+  }
+)
+eps_sensitivity_table <- rbindlist(eps_sensitivity_results)
+
+fwrite(eps_sensitivity_table,
+       file.path(output_dir, "phase7_eps_sensitivity.csv"))
+
+knitr::kable(eps_sensitivity_table,
+             caption = "Phase 7 DBSCAN eps sensitivity check (+/-0.1 km)")
+\end{lstlisting}
+
+% ============================================================
+\section{Phase 8: Interpretation Corrections}
+% ============================================================
+
+\subsection{Change 8-A: Fix Cluster 2 Naming (Medium)}
+
+\textbf{Location:} Lines 1894--1912 (chunk \rcode{phase-8-final-names}).\\
+\textbf{Audit source:} Improvement IP-4
+
+\textbf{Problem:} The naming hierarchy never matches Cluster 2 with a
+meaningful condition, so it receives the generic fallback name
+``Scenario Cluster 2 --- Cloudy.'' Cluster 2 has 3{,}857 rows and Sev3/4 of
+17.27\%, making it the second-largest risk group. It deserves a real name.
+
+\textbf{Diagnosis first:} Before changing the naming code, add a diagnostic
+print block to see Cluster 2's actual profile values. Insert after the
+\rcode{scenario\_weather\_time\_profile} is built:
+
+\begin{lstlisting}
+# v2.0: Diagnostic -- inspect all profile values to guide naming
+cat("=== Cluster Profile Values for Naming Diagnostics ===\n")
+print(scenario_weather_time_profile[, .(
+  scenario_cluster, dominant_hour_band, dominant_weather_group,
+  night_pct, weekend_pct, junction_pct, traffic_signal_pct,
+  crossing_pct
+)])
+cat("=====================================================\n")
+\end{lstlisting}
+
+\textbf{Updated naming hierarchy} (replace lines 1894--1912):
+\begin{lstlisting}
+scenario_final_names[, final_name := dplyr::case_when(
+  # Tier 1: Extreme weather
+  dominant_weather_group == "Snow_Ice" ~
+    "Winter Adverse --- Snow and Ice",
+
+  # Tier 2: Night with hazardous conditions
+  night_pct >= 50 &
+    dominant_weather_group %in% c("Fog_Haze", "Rain", "Thunderstorm") ~
+    "Night Low-Visibility --- Fog and Rain",
+
+  # Tier 3: Night / early morning (any weather)
+  night_pct >= 50 & dominant_hour_band == "Early_AM" ~
+    paste("Night / Early AM ---",
+          gsub("_", " ", dominant_weather_group)),
+
+  # Tier 4: Weekend surface road
+  weekend_pct >= 40 & traffic_signal_pct >= 8 ~
+    "Weekend Surface Road --- Signal Heavy",
+
+  # Tier 5: Rush corridor
+  dominant_hour_band %in% c("AM_Rush", "PM_Rush") &
+    junction_pct >= 10 ~
+    paste(gsub("_", " ", dominant_weather_group),
+          gsub("_", " ", dominant_hour_band),
+          "--- Junction Heavy"),
+
+  # Tier 6 (v2.0 NEW): Cloudy midday surface road
+  # Captures clusters dominated by Cloudy weather in off-peak daytime hours
+  dominant_weather_group == "Cloudy" &
+    dominant_hour_band %in% c("Midday", "Evening") ~
+    paste("Cloudy Off-Peak ---",
+          gsub("_", " ", dominant_hour_band)),
+
+  # Tier 7 (v2.0 NEW): Clear daytime non-rush
+  dominant_weather_group == "Clear" &
+    dominant_hour_band %in% c("Midday", "Evening") ~
+    paste("Clear Off-Peak ---",
+          gsub("_", " ", dominant_hour_band)),
+
+  # Fallback: still generic but more informative
+  TRUE ~
+    paste("Mixed Conditions ---",
+          gsub("_", " ", dominant_weather_group),
+          gsub("_", " ", dominant_hour_band))
+)]
+\end{lstlisting}
+
+\textbf{Note:} Run the diagnostic print first. The Tier 6 and Tier 7
+conditions use \rcode{dominant\_hour\_band} values from the actual profile.
+If Cluster 2's dominant hour band is neither Midday nor Evening, adjust
+the condition to match the observed value.
+
+\subsection{Change 8-B: Add Explicit Severity 4 Rate Column (Medium)}
+
+\textbf{Location:} Phase 8 severity profiling block (approximately
+lines 1769--1790).\\
+\textbf{Audit source:} Improvement IP-5
+
+\textbf{Change:} After building \rcode{scenario\_severity\_profile},
+add a baseline comparison row and export the expanded table:
+
+\begin{lstlisting}
+# v2.0: Add sev4_rate column and baseline comparison row
+dataset_sev4_rate <- round(100 * mean(df_clustered$Severity == 4), 2)
+dataset_sev34_rate <- round(
+  100 * mean(df_clustered$Severity %in% c(3, 4)), 2
+)
+
+scenario_severity_profile[, sev4_rate := round(
+  100 * sev4_count / n_accidents, 2
+)]
+scenario_severity_profile[, sev4_vs_baseline := round(
+  sev4_rate / dataset_sev4_rate, 2
+)]
+
+# Baseline row for easy comparison
+baseline_row <- data.table(
+  scenario_cluster = 0L,
+  n_accidents      = nrow(df_clustered),
+  sev1_pct = round(100 * mean(df_clustered$Severity == 1), 2),
+  sev2_pct = round(100 * mean(df_clustered$Severity == 2), 2),
+  sev3_pct = round(100 * mean(df_clustered$Severity == 3), 2),
+  sev4_pct = round(100 * mean(df_clustered$Severity == 4), 2),
+  sev34_pct = dataset_sev34_rate,
+  sev4_count = sum(df_clustered$Severity == 4),
+  high_risk_archetype = FALSE,
+  sev4_rate    = dataset_sev4_rate,
+  sev4_vs_baseline = 1.00
+)
+
+severity_profile_v2 <- rbind(
+  baseline_row,
+  scenario_severity_profile,
+  fill = TRUE
+)
+
+fwrite(severity_profile_v2,
+       file.path(output_dir, "phase8_severity_profile_v2.csv"))
+
+knitr::kable(severity_profile_v2,
+  caption = paste(
+    "Phase 8 severity profile with Sev4 rate per cluster.",
+    "Row 0 = dataset baseline.",
+    "sev4_vs_baseline = ratio of cluster Sev4 rate to baseline."
+  )
+)
+\end{lstlisting}
+
+% ============================================================
+\section{Phase 9: Export and Visualization Corrections}
+% ============================================================
+
+\subsection{Change 9-A: Add Warning Annotation to Stability Plot (Medium)}
+
+\textbf{Location:} Phase 9 stability plot chunk (approximately
+lines 2101--2158).\\
+\textbf{Audit source:} Defect 1 (visualization component)
+
+\textbf{Problem:} The stability bar chart shows all bars in the red zone
+but carries no label or subtitle informing the reader why this is
+significant. A reader encountering the plot in the final report without
+reading the surrounding text would not understand the implication.
+
+\textbf{Change:} Find the \rcode{ggplot()} call that builds the stability
+plot. Modify the \rcode{labs()} call to include an explicit subtitle:
+
+\begin{lstlisting}
+# v2.0: Add quality-status subtitle to stability plot
+stability_quality_label <- if (!sil_pass || !jaccard_pass) {
+  paste0(
+    "WARNING: Results are EXPLORATORY. ",
+    "Jaccard = ", round(selected_jaccard_v2, 3),
+    " (threshold 0.40). ",
+    "Silhouette = ", round(selected_silhouette, 3),
+    " (threshold 0.30)."
+  )
+} else {
+  "Cluster quality meets acceptable thresholds."
+}
+
+# Within the existing ggplot call, update labs():
+# Replace the existing labs() with:
+# labs(
+#   title    = "Phase 6 Cluster Stability --- Rand and Jaccard by k",
+#   subtitle = stability_quality_label,
+#   x = "k (number of clusters)",
+#   y = "Index value",
+#   fill = "Metric"
+# )
+\end{lstlisting}
+
+\textbf{Implementation note:} \rcode{sil\_pass} and \rcode{jaccard\_pass}
+are defined in Change 6-B. The Phase 9 chunk runs after Phase 6 in the
+same R session, so these variables will be available.
+
+\subsection{Change 9-B: Feature Sensitivity Comparison Export (High)}
+
+\textbf{Location:} Phase 9 export block, after existing table exports.
+
+\textbf{New code:}
+\begin{lstlisting}
+# v2.0: Export feature sensitivity comparison
+if (file.exists(file.path(output_dir, "phase6_feature_silhouette_comparison.csv"))) {
+  feature_sil_compare <- fread(
+    file.path(output_dir, "phase6_feature_silhouette_comparison.csv")
+  )
+
+  p_feature_compare <- ggplot(
+    feature_sil_compare,
+    aes(x = factor(k), y = silhouette, fill = feature_set)
+  ) +
+    geom_col(position = "dodge", width = 0.6) +
+    geom_hline(yintercept = 0.30, linetype = "dashed",
+               color = "red", linewidth = 0.8) +
+    annotate("text", x = 0.7, y = 0.31, hjust = 0, size = 3,
+             color = "red", label = "Threshold 0.30") +
+    scale_fill_manual(
+      values = c("full" = "#4472C4", "reduced" = "#ED7D31"),
+      labels = c("Full (16 features)", "Reduced (14 features)")
+    ) +
+    labs(
+      title    = "Phase 6 Silhouette: Full vs Reduced Feature Set",
+      subtitle = "Reduced set drops Pressure(in) and Visibility(mi)",
+      x = "k", y = "Silhouette width", fill = "Feature set"
+    ) +
+    theme_bw(base_size = 11)
+
+  ggsave(
+    file.path(output_dir, "figures", "phase9_feature_sensitivity.png"),
+    plot   = p_feature_compare,
+    width  = 7, height = 4, dpi = 300
+  )
+}
+\end{lstlisting}
+
+% ============================================================
+\section{Phase 10: Limitations Table Correction}
+% ============================================================
+
+\subsection{Change 10-A: Add Cluster Quality Failure to Limitations (Critical)}
+
+\textbf{Location:} Phase 10 limitations table block (approximately
+lines 2756--2790).\\
+\textbf{Audit source:} Defect 1 (report transparency component)
+
+\textbf{Problem:} The existing limitations table lists six items including
+``sampled validation,'' duration capping, and precipitation exclusion.
+It does not contain any row stating that the scenario cluster quality
+metrics are below standard thresholds or that the scenario results are
+therefore exploratory. A reader of only the report PDF has no way to
+know that Sanity Check 4 failed.
+
+\textbf{Change:} Locate the \rcode{phase10\_limitations\_table} construction.
+Add the following rows to the data.table:
+
+\begin{lstlisting}
+# v2.0: Add cluster quality limitation rows to the limitations table
+# These rows go FIRST so they are immediately visible in the rendered table.
+cluster_quality_limitations <- data.table(
+  limitation = c(
+    "Scenario cluster quality below standard thresholds",
+    "Scenario clustering presented as exploratory"
+  ),
+  detail = c(
+    paste0(
+      "Silhouette width = ",
+      round(selected_silhouette, 3),
+      " (published threshold >= 0.30, Kaufman and Rousseeuw 1990). ",
+      "Jaccard stability index = ",
+      round(selected_jaccard_v2, 3),
+      " (threshold >= 0.40 for exploratory, >= 0.60 for acceptable, ",
+      "Hennig 2007). Both metrics fall below acceptable thresholds."
+    ),
+    paste0(
+      "Because silhouette and Jaccard are both below threshold, ",
+      "the k = ", selected_k, " scenario clustering solution should be ",
+      "interpreted as a set of candidate patterns for hypothesis generation, ",
+      "not as stable or confirmed accident archetypes. ",
+      "The DBSCAN spatial clustering results are separately validated and ",
+      "remain defensible."
+    )
+  ),
+  impact = c(
+    "Cluster boundaries are weak; different samples may produce different partitions.",
+    "Severity 3/4 elevation in Clusters 4 and 5 is a plausible signal but requires replication."
+  ),
+  mitigation = c(
+    "Rerun with full_srs profile on a high-memory machine to obtain full-data silhouette estimates.",
+    "Present findings with explicit exploratory caveats in all report sections discussing scenario clusters."
+  )
+)
+
+# Prepend these rows before the existing limitations
+phase10_limitations_table <- rbind(
+  cluster_quality_limitations,
+  phase10_limitations_table,
+  fill = TRUE
+)
+\end{lstlisting}
+
+% ============================================================
+\section{Verification Checklist After All Changes}
+% ============================================================
+
+After implementing all changes in \rfile{li\_clustering\_v2.Rmd} and
+successfully knitting the document, verify the following:
+
+\begin{longtable}{|p{0.5cm}|p{4.5cm}|p{8.5cm}|}
+\hline
+\textbf{\#} & \textbf{Check} & \textbf{Expected outcome} \\
+\hline
+\endfirsthead
+\hline
+\textbf{\#} & \textbf{Check} & \textbf{Expected outcome} \\
+\hline
+\endhead
+1 & Profile is consensus\_16gb & Line 135 of v2 reads \rcode{run\_profile <- "consensus\_16gb"} \\
+\hline
+2 & Quality gate CSV exists & \rcode{phase6\_quality\_gate.csv} in output directory \\
+\hline
+3 & Warning fires if Jaccard < 0.40 & R console shows the WARNING block during render \\
+\hline
+4 & k-selection trace printed & Console output shows ``=== Phase 6 k-Selection Diagnostics ==='' \\
+\hline
+5 & Jaccard CI table renders & \rcode{phase6\_jaccard\_ci.csv} populated (if consensus profile) \\
+\hline
+6 & Reduced feature matrix built & \rcode{df\_scenario\_reduced} has 14 columns, zero NAs \\
+\hline
+7 & Feature sensitivity CSV exists & \rcode{phase6\_feature\_silhouette\_comparison.csv} \\
+\hline
+8 & Cluster 2 has non-generic name & \rcode{phase8\_scenario\_final\_names.csv} contains no row matching ``Scenario Cluster 2 ---'' \\
+\hline
+9 & Severity 4 column present & \rcode{phase8\_severity\_profile\_v2.csv} has \rcode{sev4\_rate} and \rcode{sev4\_vs\_baseline} columns; row 0 is baseline \\
+\hline
+10 & Centroid CSV exists & \rcode{phase7\_cluster\_centroids.csv} with lat/lng columns \\
+\hline
+11 & eps sensitivity CSV exists & \rcode{phase7\_eps\_sensitivity.csv} with 3 rows \\
+\hline
+12 & Stability plot has subtitle & Rendered PDF stability chart shows the quality warning subtitle \\
+\hline
+13 & Limitations table has quality rows & First two rows of \rcode{phase10\_limitations\_table} address silhouette and Jaccard failure \\
+\hline
+14 & Sanity audit check 4 & Still expected to show FAIL unless consensus profile improves Jaccard; result must be accurately reported \\
+\hline
+15 & Binary flags use native levels & No \rcode{labels = c("FALSE","TRUE")} pattern anywhere in v2 file \\
+\hline
+\end{longtable}
+
+% ============================================================
+\section{Decision Tree After Seeing Consensus Profile Results}
+% ============================================================
+
+Once \rfile{li\_clustering\_v2.Rmd} has been knitted under
+\rcode{consensus\_16gb}, the following decision tree determines next steps:
+
+\subsection{If consensus Jaccard $\geq 0.40$}
+
+The \rcode{local\_safe} Jaccard of 0.1989 was a sampling artifact.
+The full consensus result is acceptable.
+
+\begin{itemize}
+\item Remove the exploratory disclaimers added in Changes 6-B, 9-A, 10-A.
+\item Update the limitations table to say: ``Initial sampled validation
+  under-estimated stability; consensus validation confirms acceptable
+  cluster quality (Jaccard $\geq 0.40$).''
+\item Present the scenario clustering results as meaningful, not merely
+  exploratory.
+\end{itemize}
+
+\subsection{If consensus Jaccard remains $< 0.40$}
+
+The cluster instability is real and not a sampling artifact.
+
+\begin{itemize}
+\item Keep all exploratory disclaimers exactly as written.
+\item Check the feature sensitivity comparison
+  (\rcode{phase6\_feature\_silhouette\_comparison.csv}). If the reduced
+  feature set (without \rcode{Pressure(in)} and \rcode{Visibility(mi)})
+  shows meaningfully higher silhouette (improvement $> 0.03$), switch the
+  primary scenario pipeline to use \rcode{df\_scenario\_reduced} as input.
+\item If neither full nor reduced feature sets reach Jaccard $\geq 0.40$,
+  the data does not strongly support discrete accident scenario archetypes.
+  The report must say so plainly and pivot emphasis to the DBSCAN spatial
+  results, which are valid and defensible.
+\end{itemize}
+
+\subsection{If Cluster 2 still gets a generic name after Change 8-A}
+
+Run the diagnostic print block from Change 8-A. Inspect the actual
+\rcode{dominant\_hour\_band} value for Cluster 2. Add a Tier 6 condition
+that matches that exact value. Re-render.
+
+\subsection{If Cluster 2 name duplicates another cluster after naming fix}
+
+The deduplication logic at approximately line 1921--1924 appends
+\rcode{(S\#)} suffixes automatically. Verify that the suffix appears in
+the output CSV and update the corresponding Phase 8 narrative in the
+final report.
+
+% ============================================================
+\section{References}
+% ============================================================
+
+\begin{thebibliography}{9}
+
+\bibitem{kaufman1990}
+Leonard Kaufman and Peter J.\ Rousseeuw.
+\textit{Finding Groups in Data: An Introduction to Cluster Analysis}.
+Wiley, 1990.
+
+\bibitem{hennig2007}
+Christian Hennig.
+\textit{Cluster-wise assessment of cluster stability}.
+Computational Statistics and Data Analysis, 52(1):258--271, 2007.
+
+\bibitem{szepannek2018}
+Gero Szepannek.
+\textit{clustMixType: User-Friendly Clustering of Mixed-Type Data in R}.
+The R Journal, 2018.
+\url{https://journal.r-project.org/articles/RJ-2018-048/}
+
+\bibitem{hahsler2019}
+Michael Hahsler, Matthew Piekenbrock, and Derek Doran.
+\textit{dbscan: Fast Density-Based Clustering with R}.
+Journal of Statistical Software, 91(1), 2019.
+\url{https://www.jstatsoft.org/v91/i01/}
+
+\end{thebibliography}
+
+\end{document}
