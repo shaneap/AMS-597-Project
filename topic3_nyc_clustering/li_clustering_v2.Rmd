@@ -1043,7 +1043,7 @@ knitr::kable(phase_5_summary, caption = "Phase 5 readiness summary")
 # Results compared against full-feature runs in Phase 6.
 
 kp_results_reduced <- list()
-for (k_val in candidate_k_values) {
+for (k_val in candidate_k) {
   set.seed(42)
   kp_results_reduced[[as.character(k_val)]] <- clustMixType::kproto(
     x         = df_scenario_reduced,
@@ -1574,7 +1574,7 @@ knitr::kable(selection_summary, caption = "Phase 6 k-selection summary")
 set.seed(42)
 validation_reduced_raw <- clustMixType::validation_kproto(
   method  = "silhouette",
-  k       = candidate_k_values,
+  k       = candidate_k,
   x       = df_scenario_reduced,
   nstart  = 5,
   type    = "gower",
