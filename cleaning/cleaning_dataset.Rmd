@@ -45,8 +45,8 @@ row_audit <- data.table(
   notes = character()
 )
 
-data_path <- "US_Accidents_March23.csv"
-clean_path <- "li_accidents_clean.csv"
+data_path <- "../data/US_Accidents_March23.csv"
+clean_path <- "../data/li_accidents_clean.csv"
 audit_path <- "li_cleaning_audit.csv"
 decision_path <- "li_cleaning_decisions.csv"
 ```
