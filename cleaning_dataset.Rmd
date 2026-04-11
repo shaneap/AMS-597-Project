@@ -89,18 +89,36 @@ li_data <- raw_data[
     (nzip >= 11700 & nzip < 12000)
 ]
 
+rows_after_zip <- nrow(li_data)
+
 row_audit <- rbind(
   row_audit,
   data.table(
     step = "Long Island ZIP filter",
     rows_before = original_rows,
-    rows_after = nrow(li_data),
-    rows_removed = original_rows - nrow(li_data),
+    rows_after = rows_after_zip,
+    rows_removed = original_rows - rows_after_zip,
     notes = "Kept ZIP codes in the requested 110xx, 115xx, and 117xx-119xx ranges."
   )
 )
 
-filter_counts <- row_audit[step %in% c("Raw national file", "Long Island ZIP filter"),
+# Remove all Queens County records.  Some border ZIPs (11003, 11040, 11580)
+# straddle Queens and Nassau, so filtering by County instead of ZIP avoids
+# dropping legitimate Nassau rows in those shared codes.
+li_data <- li_data[County != "Queens"]
+
+row_audit <- rbind(
+  row_audit,
+  data.table(
+    step = "Remove Queens County rows",
+    rows_before = rows_after_zip,
+    rows_after = nrow(li_data),
+    rows_removed = rows_after_zip - nrow(li_data),
+    notes = "Dropped rows tagged as Queens County to keep only Long Island (Nassau + Suffolk)."
+  )
+)
+
+filter_counts <- row_audit[step %in% c("Raw national file", "Long Island ZIP filter", "Remove Queens County rows"),
                            .(step, rows_after, rows_removed, notes)]
 kable(filter_counts, caption = "Row counts before and after the geographic filter")
 ```
@@ -129,7 +147,7 @@ kable(county_validation, caption = "County distribution after the ZIP filter")
 kable(outside_primary_counties, caption = "Rows outside Nassau/Suffolk after ZIP filtering")
 ```
 
-The requested ZIP filter works and produces a Long Island-focused subset. The check after filtering shows that most of the records are from Nassau and Suffolk, with a small number from Queens because some border ZIP codes fall in the same range. That result is documented instead of being changed silently.
+The ZIP filter selects the Long Island ZIP ranges, and the Queens County removal then drops the 147 border-area records that belong to Queens despite sharing ZIP codes with Nassau. The final subset contains only Nassau and Suffolk County records.
 
 \newpage
 
@@ -429,7 +447,7 @@ decision_log <- data.table(
     "Implausible values"
   ),
   rationale = c(
-    "Applied the requested ZIP ranges and checked the results with ZIP and county counts.",
+    "Applied the requested ZIP ranges, then removed all Queens County rows so only Nassau and Suffolk remain.",
     "Removed only exact duplicate rows so different accident records were not merged by mistake.",
     "Used a >70% missingness threshold, and no columns crossed it in the Long Island subset.",
     "Set up the report to fill in critical fields if needed, but none were missing after filtering.",
