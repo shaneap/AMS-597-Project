@@ -1,0 +1,822 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{longtable}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.7em}
+
+\title{Software Requirements Specification\\Long Island Traffic Accident Cluster Discovery System in R}
+\author{AMS 597 Project Team}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Purpose}
+
+This project proposes an R-based analytical system that discovers meaningful patterns in Long Island traffic accidents using clustering techniques. The system is not a purely descriptive dashboard and it is not primarily a supervised prediction system. Its purpose is to discover latent accident patterns, accident scenario groups, and geographic hotspot structures along Long Island's highway corridors that are not obvious from simple count tables.
+
+The project is restricted to Long Island in order to keep the scope geographically coherent, produce an original analysis grounded in the specific road network structure of Nassau and Suffolk counties, and make the final report easier to defend academically.
+
+\section{Problem Statement}
+
+The Long Island accident dataset contains mixed variable types:
+
+\begin{itemize}
+\item numeric variables such as temperature, visibility, wind speed, and pressure
+\item categorical variables such as weather condition and day versus night
+\item binary roadway context variables such as \texttt{Crossing}, \texttt{Junction}, and \texttt{Traffic\_Signal}
+\item temporal information derivable from timestamps such as hour band, weekday, season, and rush-hour status
+\item a derived \texttt{Duration\_Minutes} variable capturing traffic impact duration
+\end{itemize}
+
+Because of this structure, the main research problem is:
+
+\textit{How can we discover interpretable and stable groups of Long Island accidents using clustering in R while respecting the mixed-type nature of the data and the corridor-dominated highway geography of Nassau and Suffolk counties?}
+
+\section{Why Long Island Specifically}
+
+Restricting the work to Long Island is methodologically useful for four reasons:
+
+\begin{itemize}
+\item the county-specific scope reduces plagiarism risk because the project becomes more focused and less generic than a statewide or citywide analysis
+\item Long Island's road network is dominated by a small set of major east-west corridors (I-495, Southern State Parkway, Northern State Parkway, Sunrise Highway, Meadowbrook Parkway), which creates a structured geographic context well suited to spatial clustering
+\item Nassau and Suffolk county-level interpretation is meaningful in terms of land use, population density, and commuter patterns
+\item the dataset is large enough to support serious analysis while being small enough to avoid the extreme memory constraints of the full NYC region
+\end{itemize}
+
+The Long Island subset contains \textbf{33,375} accident records spanning from March 2016 to March 2023.
+
+\begin{center}
+\begin{tabular}{|l|r|}
+\hline
+County & Rows \\
+\hline
+Nassau & 19,390 \\
+Suffolk & 13,838 \\
+Queens (western LI edge) & 147 \\
+\hline
+\textbf{Total} & \textbf{33,375} \\
+\hline
+\end{tabular}
+\end{center}
+
+Nassau and Suffolk are the primary analytical counties. The 147 Queens records at the western edge of Long Island are retained but are not the focus of county-level comparisons.
+
+\section{Dataset Profile Relevant to Clustering}
+
+\subsection{Size and Severity Distribution}
+
+\begin{itemize}
+\item Total rows: 33,375
+\item Date range: March 2016 to March 2023 (approximately 7 years)
+\item Severity 1: 161
+\item Severity 2: 28,357
+\item Severity 3: 3,938
+\item Severity 4: 919
+\end{itemize}
+
+Severity is heavily concentrated at level 2. This imbalance means severity should \textbf{not} be used as a clustering input variable if the goal is to interpret severity \textit{after} the clusters are formed. Severity 4 represents a meaningful rare-risk category that post-cluster profiling can illuminate.
+
+\subsection{Dominant Road Corridors}
+
+The top accident streets are entirely highway corridors, which distinguishes Long Island from a city environment with dense intersections:
+
+\begin{center}
+\begin{tabular}{|l|r|}
+\hline
+Road Segment & Accident Count \\
+\hline
+Southern State Pkwy Eastbound & 3,859 \\
+Long Island Expressway Westbound & 3,446 \\
+Southern State Pkwy Westbound & 3,299 \\
+Long Island Expressway Eastbound & 2,964 \\
+Northern State Pkwy Eastbound & 1,559 \\
+Long Island Expressway (combined) & 1,504 \\
+Northern State Pkwy Westbound & 1,066 \\
+Sunrise Highway & 804 \\
+Meadowbrook Pkwy Northbound & 659 \\
+Meadowbrook Pkwy Southbound & 640 \\
+\hline
+\end{tabular}
+\end{center}
+
+This highway-dominated structure means spatial clustering will produce corridor-shaped hotspot zones rather than the radial or grid-like hotspots expected in an urban borough setting.
+
+\subsection{Top Accident Cities}
+
+\begin{center}
+\begin{tabular}{|l|r|}
+\hline
+City & Accident Count \\
+\hline
+Merrick & 1,498 \\
+Roslyn Heights & 1,297 \\
+Valley Stream & 1,162 \\
+Huntington Station & 1,144 \\
+Old Westbury & 1,048 \\
+Wantagh & 1,040 \\
+Bay Shore & 1,029 \\
+Westbury & 1,006 \\
+Melville & 1,002 \\
+Jericho & 1,002 \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Roadway Context Variable Prevalence}
+
+\begin{itemize}
+\item \texttt{Junction = TRUE} for about 15.98\% of rows
+\item \texttt{Crossing = TRUE} for about 10.11\% of rows
+\item \texttt{Traffic\_Signal = TRUE} for about 9.55\% of rows
+\item \texttt{Stop = TRUE} for about 1.04\% of rows
+\item \texttt{Station = TRUE} for about 0.70\% of rows
+\item \texttt{Amenity = TRUE} for about 0.34\% of rows
+\item \texttt{Railway = TRUE} for about 0.15\% of rows
+\end{itemize}
+
+The lower prevalence of Railway and Amenity compared to a borough-dense urban setting reflects Long Island's primarily commuter-road infrastructure.
+
+\subsection{Temporal Patterns}
+
+Peak accident hours on Long Island follow the commuter pattern expected for a suburb-to-city corridor:
+
+\begin{itemize}
+\item morning rush peak at hours 07 and 08 (3,336 and 3,128 accidents)
+\item afternoon peak at hours 15 and 16 (2,402 and 2,363 accidents)
+\item secondary afternoon extension into hour 17 and 18
+\end{itemize}
+
+\subsection{Duration Distribution}
+
+The \texttt{Duration\_Minutes} variable (derived from start to end timestamp) has a median of approximately 78 minutes and a mean of approximately 449 minutes. The mean is inflated by extreme outliers (some records exceeding 1,000,000 minutes, which reflect data entry anomalies). Duration should either be log-transformed or capped before use as a clustering feature.
+
+\subsection{Missingness}
+
+\begin{itemize}
+\item \texttt{End\_Lat} / \texttt{End\_Lng}: about 39.2\% missing (these are not used as clustering inputs)
+\item \texttt{Precipitation(in)}: about 20.1\% missing
+\item \texttt{Wind\_Chill(F)}: about 15.0\% missing
+\item \texttt{Weather\_Condition}: about 0.02\% missing (fewer than 10 rows)
+\item \texttt{Sunrise\_Sunset} and twilight fields: about 0.02\% missing
+\end{itemize}
+
+Implications:
+
+\begin{itemize}
+\item \texttt{Precipitation(in)} should not be a core clustering feature unless there is a clear imputation strategy; 20\% missingness is too high for routine median imputation
+\item \texttt{Wind\_Chill(F)} is largely redundant with \texttt{Temperature(F)} and has 15\% missingness; exclude from the core model
+\item \texttt{End\_Lat} and \texttt{End\_Lng} are excluded from all clustering as they are missing for 39\% of rows and are not needed when \texttt{Start\_Lat} and \texttt{Start\_Lng} are used for spatial clustering
+\end{itemize}
+
+\section{Research-Backed Method Selection}
+
+\subsection{Why Plain k-Means Should Not Be the Main Method}
+
+The standard R implementation of \texttt{kmeans()} expects numeric input. The Long Island accident data is not naturally numeric-only. It includes factors, binaries, time-derived categories, and mixed roadway conditions.
+
+Therefore:
+
+\begin{itemize}
+\item plain k-means is not the best primary method for the full research workflow
+\item forcing all variables into crude numeric codes would damage interpretability
+\item k-means can still be used later as a reduced numeric-only comparison, but not as the main solution
+\end{itemize}
+
+\subsection{Why Full Gower Plus Hierarchical Clustering or PAM Is Not the Main Method}
+
+The function \texttt{cluster::daisy()} supports mixed variable types through Gower-style dissimilarities. For the Long Island dataset of 33,375 rows:
+
+\begin{itemize}
+\item pairwise distances = approximately 556,546,875
+\item storing the distance matrix as doubles would require approximately 4.15 GiB
+\end{itemize}
+
+While this is more tractable than the NYC scale, 4.15 GiB is still prohibitive for most computing environments without dedicated memory allocation. Therefore:
+
+\begin{itemize}
+\item full \texttt{daisy()} plus \texttt{agnes()} or \texttt{pam()} on all 33,375 rows is not recommended as the primary workflow
+\item this strategy may be used on a smaller sample for sensitivity analysis or comparison
+\end{itemize}
+
+\subsection{Why CLARA Is Not the Best Primary Method}
+
+\texttt{cluster::clara()} is designed for large applications. However, its input expects numeric or logical data. For this project, the mixed categorical structure would need extra encoding before clustering.
+
+Therefore:
+
+\begin{itemize}
+\item CLARA is a reasonable fallback for a numeric or dummy-encoded workflow
+\item it is not the cleanest primary method for mixed accident records
+\end{itemize}
+
+\subsection{Recommended Primary Method: k-Prototypes}
+
+The recommended primary method is \texttt{clustMixType::kproto()}.
+
+Reasons:
+
+\begin{itemize}
+\item it is designed for mixed-type data
+\item it accepts numeric and factor variables together
+\item it supports \texttt{type = "gower"}, which range-normalizes numeric distances
+\item the package ecosystem supports validation and cluster stability analysis
+\item the associated R Journal paper explicitly argues that all-pairs mixed-distance approaches are not feasible for large datasets, whereas k-prototypes scales linearly in the number of observations
+\end{itemize}
+
+\subsection{Recommended Secondary Method: DBSCAN}
+
+The recommended secondary method is \texttt{dbscan::dbscan()} for spatial hotspot discovery along Long Island's highway corridors.
+
+Reasons:
+
+\begin{itemize}
+\item Long Island accident hotspots are expected to follow elongated east-west highway shapes (LIE, Southern State, Northern State) rather than compact urban grid clusters
+\item DBSCAN is designed for dense regions with arbitrary shape, making it appropriate for corridor-style hotspots
+\item DBSCAN naturally labels sparse non-corridor points as noise
+\item the highway-dominated setting means a small number of meaningful clusters is expected, which aligns with DBSCAN's behavior
+\end{itemize}
+
+\subsection{Final Method Decision}
+
+The best overall project design is a two-layer clustering system:
+
+\begin{enumerate}
+\item \textbf{Scenario clustering}: use \texttt{kproto(type = "gower")} on mixed contextual variables
+\item \textbf{Spatial clustering}: use \texttt{dbscan()} on projected start coordinates, with emphasis on highway corridor shape discovery
+\end{enumerate}
+
+This is better than trying to force a single algorithm to answer every question.
+
+\section{Recommended Research Framing}
+
+The strongest topic statement is:
+
+\textit{Cluster-Based Discovery of Accident Scenarios and Spatial Hotspots on Long Island Using R}
+
+Recommended research questions:
+
+\begin{itemize}
+\item What latent accident scenario clusters exist on Long Island when accidents are grouped by time, weather, and roadway context?
+\item How do these clusters differ between Nassau and Suffolk counties?
+\item Which discovered clusters contain a higher share of severe accidents (Severity 3 or 4)?
+\item Where are the densest accident hotspot corridors on Long Island, and do they align with known high-volume highways such as the LIE and Southern State Parkway?
+\item Do the spatial hotspot zones correspond to particular scenario clusters, for example rush-hour highway scenarios versus off-peak surface-road scenarios?
+\end{itemize}
+
+\section{What the Project Should and Should Not Do}
+
+\subsection{What We Should Do}
+
+\begin{itemize}
+\item use \texttt{li\_accidents\_clean.csv} as the official project dataset
+\item build one mixed-type scenario clustering pipeline in R
+\item build one separate spatial hotspot clustering pipeline in R focused on LI highway corridor shapes
+\item exclude severity from the clustering input matrix and use it only afterward for interpretation
+\item engineer interpretable time features from \texttt{Start\_Time}
+\item collapse rare weather categories into an \texttt{Other} group
+\item use county (Nassau vs Suffolk) mainly for reporting and comparison
+\item validate cluster quality and stability rather than choosing cluster counts arbitrarily
+\item document the \texttt{Duration\_Minutes} outlier situation and decide on a treatment strategy
+\end{itemize}
+
+\subsection{What We Should Avoid}
+
+\begin{itemize}
+\item do not run plain k-means on the raw mixed dataset
+\item do not use \texttt{ID}, \texttt{Description}, \texttt{Street}, or raw text as clustering inputs
+\item do not include \texttt{Severity} as a clustering feature if the goal is to interpret severity after clustering
+\item do not build a full all-pairs Gower distance matrix for all 33,375 rows without memory planning
+\item do not overclaim causality
+\item do not rank counties as more dangerous without traffic exposure denominators
+\item do not impute \texttt{Precipitation(in)} without justification given the 20\% missingness rate
+\end{itemize}
+
+\section{System Scope}
+
+\subsection{In Scope}
+
+\begin{itemize}
+\item ingestion of \texttt{li\_accidents\_clean.csv}
+\item cleaning and feature engineering in R
+\item mixed-type clustering for accident scenario discovery
+\item density-based spatial clustering for highway hotspot discovery
+\item cluster validation and stability assessment
+\item Nassau versus Suffolk county comparison of discovered clusters
+\item severity profiling after clustering
+\item exports, tables, and charts for the final report
+\end{itemize}
+
+\subsection{Out of Scope}
+
+\begin{itemize}
+\item causal inference
+\item real-time prediction
+\item live traffic feed integration
+\item deep learning on text descriptions
+\item national or statewide generalization
+\item NYC borough comparisons
+\end{itemize}
+
+\section{Stakeholders}
+
+The main stakeholders are:
+
+\begin{itemize}
+\item the student research team
+\item the course instructor
+\item transportation and safety audiences who may read the final report
+\item the class presentation audience
+\end{itemize}
+
+\section{Functional Requirements}
+
+\textbf{FR-1 Data ingestion.} The system shall load \texttt{li\_accidents\_clean.csv} in R and preserve the original columns before preprocessing.
+
+\textbf{FR-2 Data cleaning.} The system shall parse timestamps, handle missing values, and convert binary and categorical variables to suitable types.
+
+\textbf{FR-3 Time feature engineering.} The system shall derive hour, hour band, weekday, weekend flag, month, season, and rush-hour status from \texttt{Start\_Time}.
+
+\textbf{FR-4 Duration treatment.} The system shall document the \texttt{Duration\_Minutes} outlier distribution and apply either a log transform or a cap before any use in clustering.
+
+\textbf{FR-5 Weather grouping.} The system shall collapse rare weather categories into a smaller interpretable set.
+
+\textbf{FR-6 Scenario matrix creation.} The system shall build a mixed-type feature matrix for scenario clustering.
+
+\textbf{FR-7 Leakage control.} The system shall exclude \texttt{Severity}, IDs, free-text fields, and raw coordinates from the scenario clustering matrix.
+
+\textbf{FR-8 Scenario clustering.} The system shall run \texttt{kproto()} with repeated starts to reduce unstable initializations.
+
+\textbf{FR-9 Cluster-count selection.} The system shall evaluate candidate cluster counts, recommended as $k = 3$ through $8$, using validation output.
+
+\textbf{FR-10 Stability analysis.} The system shall perform bootstrap-based cluster stability checks.
+
+\textbf{FR-11 Cluster profiling.} The system shall summarize each discovered cluster using dominant conditions, numeric summaries, county composition (Nassau vs Suffolk), and severity composition.
+
+\textbf{FR-12 Spatial hotspot clustering.} The system shall run DBSCAN on projected start coordinates and identify highway corridor hotspot clusters and noise points.
+
+\textbf{FR-13 Export.} The system shall export cluster-labeled outputs and summary tables for reporting.
+
+\section{Non-Functional Requirements}
+
+\textbf{NFR-1 Reproducibility.} The workflow shall be reproducible through R scripts or R Markdown with fixed random seeds where needed.
+
+\textbf{NFR-2 Interpretability.} The clustering approach shall favor explainability over novelty.
+
+\textbf{NFR-3 Scalability.} The main workflow shall operate on the full Long Island subset without requiring a full pairwise distance matrix.
+
+\textbf{NFR-4 Maintainability.} The code shall be split into readable preprocessing, clustering, validation, and export stages.
+
+\textbf{NFR-5 Academic defensibility.} The algorithm choice shall be justified with source-backed reasons and clear methodological arguments.
+
+\textbf{NFR-6 Ethical reporting.} Results shall be presented as exploratory pattern discovery, not proof of causation.
+
+\section{Data Requirements}
+
+\subsection{Recommended Inputs for Scenario Clustering}
+
+Recommended features:
+
+\begin{itemize}
+\item \texttt{hour\_band}
+\item \texttt{weekday}
+\item \texttt{weekend}
+\item \texttt{season}
+\item \texttt{rush\_hour}
+\item \texttt{Sunrise\_Sunset}
+\item \texttt{weather\_group}
+\item \texttt{Temperature(F)}
+\item \texttt{Humidity(\%)}
+\item \texttt{Pressure(in)}
+\item \texttt{Visibility(mi)}
+\item \texttt{Wind\_Speed(mph)}
+\item \texttt{Crossing}
+\item \texttt{Junction}
+\item \texttt{Traffic\_Signal}
+\item \texttt{Stop}
+\item \texttt{Railway}
+\item \texttt{Amenity}
+\item \texttt{Station}
+\end{itemize}
+
+\subsection{Variables to Treat Carefully}
+
+\begin{itemize}
+\item \texttt{Precipitation(in)}: 20.1\% missing, so exclude from the core model unless a justified imputation strategy is applied
+\item \texttt{Wind\_Chill(F)}: 15.0\% missing and largely redundant with \texttt{Temperature(F)}; exclude from the core model
+\item \texttt{Duration\_Minutes}: heavy outliers present (max exceeds 2 million minutes); apply log transform or cap before use
+\item \texttt{Distance(mi)}: may reflect reporting behavior or event extent more than accident scenario type
+\item \texttt{County}: useful for post-cluster comparison between Nassau and Suffolk, but not ideal as a dominant clustering input
+\end{itemize}
+
+\subsection{Variables to Exclude From Scenario Clustering}
+
+\begin{itemize}
+\item \texttt{Severity}
+\item \texttt{ID}
+\item \texttt{Source}
+\item \texttt{Description}
+\item \texttt{Street}
+\item \texttt{City}
+\item \texttt{Zipcode}
+\item \texttt{nzip}
+\item \texttt{Start\_Lat}
+\item \texttt{Start\_Lng}
+\item \texttt{End\_Lat}
+\item \texttt{End\_Lng}
+\end{itemize}
+
+\section{Detailed Analytical Design}
+
+\subsection{Scenario Clustering}
+
+Goal:
+
+\begin{itemize}
+\item discover accident archetypes such as rush-hour highway clusters, night low-visibility clusters, and junction-heavy surface-road clusters that are specific to Long Island's commuter-corridor geography
+\end{itemize}
+
+Recommended method settings:
+
+\begin{itemize}
+\item algorithm: \texttt{kproto()}
+\item distance type: \texttt{type = "gower"}
+\item candidate cluster counts: $k = 3:8$
+\item repeated starts: at least \texttt{nstart = 5}, preferably \texttt{10}
+\item missing-data handling: internal imputation or a clearly documented preprocessing step
+\end{itemize}
+
+\subsection{Spatial Hotspot Clustering}
+
+Goal:
+
+\begin{itemize}
+\item discover dense accident corridors along Long Island's major east-west highways (I-495 LIE, Southern State Pkwy, Northern State Pkwy, Sunrise Hwy) and north-south connectors (Meadowbrook Pkwy, Wantagh Pkwy, Bethpage State Pkwy)
+\end{itemize}
+
+Recommended method settings:
+
+\begin{itemize}
+\item algorithm: \texttt{dbscan()}
+\item inputs: projected start coordinates in approximate kilometer units
+\item parameter tuning: choose \texttt{eps} from a k-nearest-neighbor distance plot instead of guessing blindly; Long Island's elongated highway corridors may require a slightly larger \texttt{eps} than a dense urban setting
+\item inspect the percentage of noise points and the number and shape of clusters
+\end{itemize}
+
+\subsection{Interpretation Strategy}
+
+After clustering:
+
+\begin{itemize}
+\item join cluster labels back to the cleaned dataset
+\item compute severity distribution by cluster
+\item compute county distribution (Nassau vs Suffolk) by cluster
+\item compare day versus night and weather composition by cluster
+\item compare hotspot corridor assignments with scenario clusters where useful
+\item assign plain-English names to the discovered clusters (for example: \textit{AM Rush LIE Corridor}, \textit{Weekend Surface Road}, \textit{Night Low-Visibility}, \textit{PM Merge Zone})
+\end{itemize}
+
+\section{Validation Strategy}
+
+The project should not stop at obtaining cluster labels. It must show why the clusters are acceptable.
+
+\subsection{Validation for k-Prototypes}
+
+Use:
+
+\begin{itemize}
+\item \texttt{validation\_kproto()} for internal validation across candidate values of $k$
+\item \texttt{stability\_kproto()} for bootstrap stability checks
+\item \texttt{summary()} and \texttt{clprofiles()} for interpretation
+\end{itemize}
+
+Decision rule:
+
+\begin{itemize}
+\item choose a solution that balances interpretability, validation quality, and stability
+\item avoid cluster solutions dominated by tiny clusters unless they represent a meaningful rare-risk pattern (such as a Severity 4 cluster)
+\end{itemize}
+
+\subsection{Validation for DBSCAN}
+
+Use:
+
+\begin{itemize}
+\item kNN distance plots for parameter selection
+\item hotspot size inspection
+\item map-based inspection of cluster shapes, particularly whether clusters follow highway alignments
+\item percentage of noise points
+\end{itemize}
+
+\section{Use Cases}
+
+\textbf{UC-1 Full workflow execution.} A researcher runs the full preprocessing, scenario clustering, hotspot clustering, and export pipeline on \texttt{li\_accidents\_clean.csv}.
+
+\textbf{UC-2 County comparison.} A researcher compares how Nassau and Suffolk counties are distributed across the discovered scenario clusters.
+
+\textbf{UC-3 Severity interpretation.} A researcher evaluates which discovered clusters contain a larger proportion of Severity 3 and Severity 4 accidents.
+
+\textbf{UC-4 Hotspot analysis.} A researcher maps DBSCAN hotspot assignments and interprets dense highway accident zones along the LIE and Southern State Pkwy.
+
+\section{Acceptance Criteria}
+
+The project is successful if it can:
+
+\begin{itemize}
+\item load and preprocess \texttt{li\_accidents\_clean.csv} reproducibly in R
+\item generate an interpretable mixed-type clustering solution for Long Island accident scenarios
+\item justify the selected cluster count with validation output
+\item demonstrate cluster stability analysis
+\item produce a DBSCAN hotspot analysis showing corridor-aligned clusters
+\item connect cluster results back to severity and county patterns
+\item generate report-ready tables and figures
+\end{itemize}
+
+\section{Risks and Mitigations}
+
+\textbf{Risk 1:} Mixed-type distance is handled poorly.\\
+\textbf{Mitigation:} use \texttt{kproto()} rather than forcing the data into plain k-means.
+
+\textbf{Risk 2:} Highway corridors dominate the scenario clusters.\\
+\textbf{Mitigation:} keep spatial clustering separate from scenario clustering; do not include street names or raw coordinates in the scenario feature matrix.
+
+\textbf{Risk 3:} Severity imbalance distorts the clusters.\\
+\textbf{Mitigation:} do not cluster on severity directly; profile it afterward.
+
+\textbf{Risk 4:} Rare weather labels destabilize the solution.\\
+\textbf{Mitigation:} collapse infrequent weather conditions into an \texttt{Other} category.
+
+\textbf{Risk 5:} High precipitation missingness weakens the model.\\
+\textbf{Mitigation:} exclude precipitation from the core design (20.1\% missing) or justify imputation clearly.
+
+\textbf{Risk 6:} Duration outliers distort the numeric distance.\\
+\textbf{Mitigation:} log-transform or cap \texttt{Duration\_Minutes} before including it in the feature matrix.
+
+\textbf{Risk 7:} The algorithm choice is challenged in review.\\
+\textbf{Mitigation:} justify the method choice with official R documentation and package literature.
+
+\section{Phase-by-Phase Implementation Breakdown}
+
+This section translates the SRS into an execution plan that can be implemented step by step.
+
+\subsection{Phase 1: Repository Setup and Data Organization}
+
+\textbf{Objective:} prepare a clean project structure for Topic 3 and isolate the Long Island clustering work from other project experiments.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item keep the Long Island CSV (\texttt{li\_accidents\_clean.csv}), the SRS source, the compiled PDF, and the R clustering script in the topic-specific folder
+\item keep the project on the dedicated \texttt{topic-3-nyc-accident-clustering} branch
+\item remove temporary helper scripts and LaTeX build artifacts from the working directory
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item a clean Topic 3 folder
+\item a clean git status before commit
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item only the files needed for Topic 3 remain as intended deliverables
+\item the branch is ready for commit and push
+\end{itemize}
+
+\subsection{Phase 2: Data Preparation}
+
+\textbf{Objective:} build an analysis-ready Long Island accident dataset in R.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item load \texttt{li\_accidents\_clean.csv}
+\item parse \texttt{Start\_Time} and related time fields
+\item derive hour, hour band, weekday, weekend, month, season, and rush-hour indicators
+\item address \texttt{Duration\_Minutes} outliers (log transform or cap)
+\item convert roadway flags and category variables into factors
+\item inspect missingness and decide which variables will be excluded, retained, or imputed
+\item collapse rare weather conditions into a smaller grouped factor
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item cleaned analysis-ready R data frame
+\item a documented feature list for clustering
+\item a short data-cleaning summary for the report
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item the dataset can be loaded and transformed reproducibly
+\item the final clustering input variables are fixed and justified
+\end{itemize}
+
+\subsection{Phase 3: Scenario Clustering with k-Prototypes}
+
+\textbf{Objective:} discover mixed-type accident scenario groups across Long Island.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item build the final mixed-type feature matrix
+\item exclude \texttt{Severity}, free-text columns, identifiers, and raw coordinates from the scenario matrix
+\item run candidate \texttt{kproto()} solutions for several values of $k$
+\item compare solutions using internal validation
+\item run repeated starts so the chosen clustering is not dependent on one weak initialization
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item candidate scenario clustering results
+\item validation output for the tested values of $k$
+\item a selected final scenario clustering model
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item one final scenario clustering solution is selected and justified
+\item the chosen clusters are interpretable and not trivially driven by one variable
+\end{itemize}
+
+\subsection{Phase 4: Cluster Validation and Stability}
+
+\textbf{Objective:} prove that the selected scenario clusters are academically defensible.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item apply \texttt{validation\_kproto()} to compare candidate solutions
+\item apply \texttt{stability\_kproto()} using bootstrap-based resampling
+\item inspect cluster sizes to ensure the solution is not dominated by very small clusters
+\item profile the clusters to confirm that each group has a meaningful interpretation tied to Long Island's highway commuter context
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item validation results for the selected cluster count
+\item stability metrics
+\item cluster profile summaries
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item the final cluster choice is supported by validation and stability evidence
+\item each cluster can be described in plain language relevant to Long Island travel patterns
+\end{itemize}
+
+\subsection{Phase 5: Spatial Hotspot Clustering with DBSCAN}
+
+\textbf{Objective:} identify dense geographic accident hotspot zones along Long Island's highway corridors.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item convert start coordinates into projected distance units suitable for spatial clustering
+\item inspect k-nearest-neighbor distance behavior and choose \texttt{eps} from the elbow of the kNN distance plot
+\item tune \texttt{minPts} based on the expected corridor density
+\item run DBSCAN on the projected coordinates
+\item separate hotspot clusters from noise points and verify that corridor shapes (LIE, Southern State, Northern State) are detected
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item final DBSCAN hotspot assignments
+\item hotspot counts and county summaries
+\item parameter-selection justification
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item hotspot clusters are meaningful and align with known high-volume LI roads
+\item the level of noise is acceptable and explainable
+\end{itemize}
+
+\subsection{Phase 6: Post-Clustering Interpretation}
+
+\textbf{Objective:} connect the discovered clusters back to real Long Island accident patterns.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item join scenario cluster labels back to the cleaned dataset
+\item compare severity distribution by scenario cluster
+\item compare Nassau versus Suffolk composition by scenario cluster
+\item compare day versus night and weather composition by cluster
+\item compare hotspot clusters with scenario clusters where useful
+\item assign plain-English names to the major cluster types (for example: \textit{AM Rush Highway}, \textit{PM Merge Zone}, \textit{Night Low-Visibility Surface Road}, \textit{Weekend Off-Peak})
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item cluster interpretation tables
+\item severity-by-cluster summaries
+\item Nassau/Suffolk-by-cluster summaries
+\item named cluster narratives for the report
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item the final report can explain what each cluster represents in terms of Long Island commuter and road patterns
+\item the interpretation is tied back to transportation and safety context
+\end{itemize}
+
+\subsection{Phase 7: Reporting, Branching, and Submission}
+
+\textbf{Objective:} package the work cleanly for review and submission.
+
+\textbf{Tasks:}
+\begin{itemize}
+\item finalize the SRS in \LaTeX
+\item compile the final PDF
+\item keep the R script aligned with the documented workflow
+\item commit the Topic 3 files on the dedicated branch
+\item push the branch to the remote repository
+\end{itemize}
+
+\textbf{Deliverables:}
+\begin{itemize}
+\item final \texttt{.tex} SRS
+\item compiled PDF
+\item R clustering workflow
+\item pushed git branch for Topic 3
+\end{itemize}
+
+\textbf{Done criteria:}
+\begin{itemize}
+\item the branch contains only the intended Topic 3 deliverables
+\item the remote branch is available for sharing, review, or merge
+\end{itemize}
+
+\section{Final Recommendation}
+
+If the project needs one strong and defensible direction, the best choice is:
+
+\begin{center}
+\textbf{Build a Long Island accident clustering system in R with two complementary components:}
+\end{center}
+
+\begin{itemize}
+\item \textbf{k-prototypes} for mixed-type accident scenario discovery across Nassau and Suffolk counties
+\item \textbf{DBSCAN} for spatial hotspot discovery along Long Island's major highway corridors
+\end{itemize}
+
+This direction is stronger than a simple descriptive analysis, more appropriate than plain k-means for the available variables, and more geographically grounded than a generic statewide or NYC-wide approach. The corridor-dominated geography of Long Island makes DBSCAN's ability to detect elongated dense clusters a natural methodological fit.
+
+\section{References}
+
+\begin{thebibliography}{9}
+
+\bibitem{r-kmeans}
+R Core Team.
+\textit{R Documentation: kmeans}.
+\url{https://search.r-project.org/R/refmans/stats/html/kmeans.html}
+
+\bibitem{r-daisy}
+R Documentation.
+\textit{cluster::daisy}.
+\url{https://stat.ethz.ch/R-manual/R-devel/library/cluster/html/daisy.html}
+
+\bibitem{r-clara}
+R Documentation.
+\textit{cluster::clara}.
+\url{https://stat.ethz.ch/R-manual/R-devel/library/cluster/html/clara.html}
+
+\bibitem{szepannek2018}
+Gero Szepannek.
+\textit{clustMixType: User-Friendly Clustering of Mixed-Type Data in R}.
+The R Journal.
+\url{https://journal.r-project.org/articles/RJ-2018-048/}
+
+\bibitem{r-kproto}
+R Documentation.
+\textit{clustMixType::kproto}.
+\url{https://search.r-project.org/CRAN/refmans/clustMixType/html/kproto.html}
+
+\bibitem{r-validation}
+R Documentation.
+\textit{clustMixType::validation\_kproto}.
+\url{https://search.r-project.org/CRAN/refmans/clustMixType/html/validation_kproto.html}
+
+\bibitem{r-stability}
+R Documentation.
+\textit{clustMixType::stability\_kproto}.
+\url{https://search.r-project.org/CRAN/refmans/clustMixType/html/stability_kproto.html}
+
+\bibitem{r-clprofiles}
+R Documentation.
+\textit{clustMixType::clprofiles}.
+\url{https://search.r-project.org/CRAN/refmans/clustMixType/html/clprofiles.html}
+
+\bibitem{r-dbscan}
+R Documentation.
+\textit{dbscan::dbscan}.
+\url{https://search.r-project.org/CRAN/refmans/dbscan/html/dbscan.html}
+
+\bibitem{hahsler2019}
+Michael Hahsler, Matthew Piekenbrock, and Derek Doran.
+\textit{dbscan: Fast Density-Based Clustering with R}.
+Journal of Statistical Software.
+\url{https://www.jstatsoft.org/v91/i01/}
+
+\end{thebibliography}
+
+\end{document}
