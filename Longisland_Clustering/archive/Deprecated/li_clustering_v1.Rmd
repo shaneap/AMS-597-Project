@@ -1,0 +1,2966 @@
+---
+title: "Long Island Clustering Workflow"
+author: "AMS 597 Project Team"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r helpers, include=FALSE}
+ordered_weekdays <- c(
+  "Monday", "Tuesday", "Wednesday", "Thursday",
+  "Friday", "Saturday", "Sunday"
+)
+
+weather_group_map <- list(
+  Clear = c("Fair", "Clear", "Fair / Windy"),
+  Cloudy = c(
+    "Mostly Cloudy", "Partly Cloudy", "Scattered Clouds", "Overcast", "Cloudy",
+    "Mostly Cloudy / Windy", "Partly Cloudy / Windy", "Cloudy / Windy"
+  ),
+  Rain = c(
+    "Light Rain", "Rain", "Heavy Rain", "Light Drizzle", "Light Rain / Windy",
+    "Heavy Rain / Windy", "Drizzle"
+  ),
+  Snow_Ice = c(
+    "Light Snow", "Snow", "Heavy Snow", "Wintry Mix",
+    "Light Freezing Rain", "Ice Pellets", "Sleet"
+  ),
+  Fog_Haze = c("Fog", "Haze", "Smoke", "Mist", "Patches of Fog", "Shallow Fog")
+)
+
+normalize_wind_direction <- function(x) {
+  x <- trimws(as.character(x))
+  x_upper <- toupper(x)
+
+  mapped <- dplyr::case_when(
+    x_upper %in% c("N", "NORTH") ~ "N",
+    x_upper %in% c("NE", "NORTHEAST", "NORTH EAST") ~ "NE",
+    x_upper %in% c("E", "EAST") ~ "E",
+    x_upper %in% c("SE", "SOUTHEAST", "SOUTH EAST") ~ "SE",
+    x_upper %in% c("S", "SOUTH") ~ "S",
+    x_upper %in% c("SW", "SOUTHWEST", "SOUTH WEST") ~ "SW",
+    x_upper %in% c("W", "WEST") ~ "W",
+    x_upper %in% c("NW", "NORTHWEST", "NORTH WEST") ~ "NW",
+    x_upper %in% c("CALM", "VARIABLE", "VAR") ~ "Variable_Calm",
+    TRUE ~ "Variable_Calm"
+  )
+
+  factor(
+    mapped,
+    levels = c("N", "NE", "E", "SE", "S", "SW", "W", "NW", "Variable_Calm")
+  )
+}
+
+mode_value <- function(x) {
+  values <- x[!is.na(x)]
+  if (!length(values)) {
+    return(NA_character_)
+  }
+
+  names(sort(table(values), decreasing = TRUE))[1]
+}
+
+dominant_share <- function(x) {
+  values <- x[!is.na(x)]
+  if (!length(values)) {
+    return(NA_real_)
+  }
+
+  max(prop.table(table(values)))
+}
+
+wrap_label <- function(x, width = 24) {
+  vapply(
+    as.character(x),
+    function(value) paste(strwrap(value, width = width), collapse = "\n"),
+    character(1)
+  )
+}
+
+rescale01 <- function(x) {
+  rng <- range(x, na.rm = TRUE)
+  if (!is.finite(rng[1]) || !is.finite(rng[2]) || diff(rng) == 0) {
+    return(rep(0.5, length(x)))
+  }
+
+  (x - rng[1]) / diff(rng)
+}
+```
+
+# Phase 1: Environment and Reproducibility Setup
+
+This file is the main reproducible workflow for the Long Island clustering analysis. It is meant to run from a clean R session and use `li_accidents_clean.csv` as the only project dataset input.
+
+```{r phase-1-config}
+required_packages <- c(
+  "data.table",
+  "dplyr",
+  "lubridate",
+  "clustMixType",
+  "dbscan",
+  "cluster",
+  "fpc",
+  "ggplot2",
+  "geosphere",
+  "factoextra",
+  "knitr",
+  "rmarkdown"
+)
+
+optional_packages <- c("plotly", "htmlwidgets")
+
+missing_packages <- required_packages[
+  !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    paste(
+      "Install these packages before running the full workflow:",
+      paste(missing_packages, collapse = ", ")
+    )
+  )
+}
+
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+set.seed(42)
+
+input_path <- "../li_accidents_clean.csv"
+output_dir <- "local_artifacts/output"
+run_profile <- "consensus_16gb"
+
+if (!run_profile %in% c("local_safe", "consensus_16gb", "full_srs")) {
+  stop("run_profile must be one of 'local_safe', 'consensus_16gb', or 'full_srs'.")
+}
+
+phase6_validation_mode <- dplyr::case_when(
+  run_profile == "full_srs" ~ "full",
+  run_profile == "consensus_16gb" ~ "consensus_sampled",
+  TRUE ~ "sampled"
+)
+phase6_validation_sample_n <- dplyr::case_when(
+  run_profile == "full_srs" ~ NA_integer_,
+  run_profile == "consensus_16gb" ~ 4000L,
+  TRUE ~ 5000L
+)
+phase6_validation_repeats <- dplyr::case_when(
+  run_profile == "consensus_16gb" ~ 4L,
+  TRUE ~ 1L
+)
+
+phase6_stability_mode <- dplyr::case_when(
+  run_profile == "full_srs" ~ "full",
+  run_profile == "consensus_16gb" ~ "consensus_sampled",
+  TRUE ~ "sampled"
+)
+phase6_stability_sample_n <- dplyr::case_when(
+  run_profile == "full_srs" ~ NA_integer_,
+  run_profile == "consensus_16gb" ~ 2500L,
+  TRUE ~ 3000L
+)
+phase6_stability_repeats <- dplyr::case_when(
+  run_profile == "consensus_16gb" ~ 3L,
+  TRUE ~ 1L
+)
+phase6_stability_bootstraps <- dplyr::case_when(
+  run_profile == "full_srs" ~ 50L,
+  run_profile == "consensus_16gb" ~ 10L,
+  TRUE ~ 15L
+)
+phase9_interactive_mode <- "auto"
+
+interactive_exports_enabled <- dplyr::case_when(
+  phase9_interactive_mode == "off" ~ FALSE,
+  phase9_interactive_mode == "on" ~ all(
+    vapply(optional_packages, requireNamespace, logical(1), quietly = TRUE)
+  ),
+  phase9_interactive_mode == "auto" ~ all(
+    vapply(optional_packages, requireNamespace, logical(1), quietly = TRUE)
+  ),
+  TRUE ~ FALSE
+)
+
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+if (!file.exists(input_path)) {
+  stop("Expected input file not found: ", input_path)
+}
+
+phase_1_check <- data.frame(
+  item = c(
+    "Input dataset",
+    "Output directory",
+    "Seed",
+    "Run profile",
+    "Phase 6 validation mode",
+    "Phase 6 sample size",
+    "Phase 6 validation repeats",
+    "Phase 6 stability mode",
+    "Phase 6 stability sample size",
+    "Phase 6 stability repeats",
+    "Phase 6 stability bootstraps",
+    "Phase 9 interactive mode",
+    "Working directory"
+  ),
+  value = c(
+    normalizePath(input_path, winslash = "/"),
+    normalizePath(output_dir, winslash = "/"),
+    "42",
+    run_profile,
+    phase6_validation_mode,
+    ifelse(is.na(phase6_validation_sample_n), "Full data", as.character(phase6_validation_sample_n)),
+    as.character(phase6_validation_repeats),
+    phase6_stability_mode,
+    ifelse(is.na(phase6_stability_sample_n), "Full data", as.character(phase6_stability_sample_n)),
+    as.character(phase6_stability_repeats),
+    as.character(phase6_stability_bootstraps),
+    ifelse(
+      interactive_exports_enabled,
+      "Enabled",
+      ifelse(phase9_interactive_mode == "off", "Off for safe local runs", "Packages missing")
+    ),
+    normalizePath(".", winslash = "/")
+  )
+)
+
+knitr::kable(phase_1_check, caption = "Phase 1 setup check")
+```
+
+```{r load-data-preview}
+df_raw <- data.table::fread(input_path, showProgress = FALSE)
+
+data_overview <- data.frame(
+  rows = nrow(df_raw),
+  columns = ncol(df_raw),
+  source_file = basename(input_path)
+)
+
+knitr::kable(data_overview, caption = "Input file loaded successfully")
+```
+
+# Phase 2: Data Ingestion and Raw Profiling
+
+This phase stays read-only. The goal is to confirm that the cleaned Long Island dataset matches the expectations in the execution plan before any feature engineering starts.
+
+```{r phase-2-dimension-checks}
+expected_rows <- 33375L
+expected_cols <- 48L
+
+if (nrow(df_raw) != expected_rows || ncol(df_raw) != expected_cols) {
+  stop(
+    paste0(
+      "Unexpected dataset dimensions. Expected ",
+      expected_rows, " rows and ", expected_cols, " columns, got ",
+      nrow(df_raw), " rows and ", ncol(df_raw), " columns."
+    )
+  )
+}
+
+phase_2_dimensions <- data.frame(
+  metric = c("Rows", "Columns"),
+  expected = c(expected_rows, expected_cols),
+  observed = c(nrow(df_raw), ncol(df_raw))
+)
+
+knitr::kable(phase_2_dimensions, caption = "Phase 2 dimension check")
+```
+
+```{r phase-2-county-and-severity}
+county_profile <- as.data.table(df_raw)[, .N, by = County][order(match(County, c("Nassau", "Suffolk", "Queens")))]
+severity_profile <- as.data.table(df_raw)[, .N, by = Severity][order(as.integer(Severity))]
+
+expected_counties <- data.table(
+  County = c("Nassau", "Suffolk", "Queens"),
+  expected_n = c(19390L, 13838L, 147L)
+)
+
+expected_severity <- data.table(
+  Severity = c(1L, 2L, 3L, 4L),
+  expected_n = c(161L, 28357L, 3938L, 919L)
+)
+
+county_check <- merge(expected_counties, county_profile, by = "County", all.x = TRUE)
+severity_check <- merge(
+  expected_severity,
+  severity_profile[, Severity := as.integer(Severity)],
+  by = "Severity",
+  all.x = TRUE
+)
+
+if (any(county_check$expected_n != county_check$N)) {
+  stop("County counts do not match the execution plan expectations.")
+}
+
+if (any(severity_check$expected_n != severity_check$N)) {
+  stop("Severity counts do not match the execution plan expectations.")
+}
+
+fwrite(county_profile, file.path(output_dir, "phase2_county_profile.csv"))
+fwrite(severity_profile, file.path(output_dir, "phase2_severity_profile.csv"))
+
+knitr::kable(county_check, caption = "County profile check")
+knitr::kable(severity_check, caption = "Severity profile check")
+```
+
+```{r phase-2-missingness}
+missingness_profile <- data.table(
+  column = names(df_raw),
+  missing_n = vapply(df_raw, function(column) sum(is.na(column)), integer(1)),
+  missing_pct = round(vapply(df_raw, function(column) mean(is.na(column)) * 100, numeric(1)), 2)
+)[order(-missing_pct, column)]
+
+missingness_focus <- missingness_profile[
+  column %in% c("End_Lat", "End_Lng", "Precipitation(in)", "Wind_Chill(F)")
+]
+
+fwrite(missingness_profile, file.path(output_dir, "phase2_missingness_profile.csv"))
+
+knitr::kable(head(missingness_profile, 12), caption = "Top missingness profile")
+knitr::kable(missingness_focus, caption = "Critical missingness checks")
+```
+
+```{r phase-2-binary-flags}
+binary_flag_profile <- data.table(
+  flag = c("Bump", "Roundabout", "Turning_Loop", "Traffic_Calming", "No_Exit"),
+  true_count = vapply(
+    df_raw[, c("Bump", "Roundabout", "Turning_Loop", "Traffic_Calming", "No_Exit")],
+    function(column) sum(as.logical(column), na.rm = TRUE),
+    integer(1)
+  )
+)
+
+binary_flag_profile[, true_pct := round(100 * true_count / nrow(df_raw), 4)]
+
+fwrite(binary_flag_profile, file.path(output_dir, "phase2_binary_flag_profile.csv"))
+
+knitr::kable(binary_flag_profile, caption = "Near-zero binary flag checks")
+```
+
+```{r phase-2-duration-distance}
+duration_values <- as.numeric(df_raw$Duration_Minutes)
+distance_values <- as.numeric(df_raw[["Distance(mi)"]])
+
+duration_profile <- data.table(
+  metric = c(
+    "Median duration",
+    "Mean duration",
+    "Max duration",
+    "Rows above 1 day",
+    "Rows above 1 week",
+    "99th percentile"
+  ),
+  value = c(
+    median(duration_values, na.rm = TRUE),
+    mean(duration_values, na.rm = TRUE),
+    max(duration_values, na.rm = TRUE),
+    sum(duration_values > 1440, na.rm = TRUE),
+    sum(duration_values > 10080, na.rm = TRUE),
+    as.numeric(quantile(duration_values, 0.99, na.rm = TRUE))
+  )
+)
+
+distance_profile <- data.table(
+  metric = c("Zero-distance rows", "Zero-distance pct", "Max distance"),
+  value = c(
+    sum(distance_values == 0, na.rm = TRUE),
+    100 * mean(distance_values == 0, na.rm = TRUE),
+    max(distance_values, na.rm = TRUE)
+  )
+)
+
+fwrite(duration_profile, file.path(output_dir, "phase2_duration_profile.csv"))
+fwrite(distance_profile, file.path(output_dir, "phase2_distance_profile.csv"))
+
+knitr::kable(duration_profile, caption = "Duration anomaly profile")
+knitr::kable(distance_profile, caption = "Distance profile")
+```
+
+```{r phase-2-wind-and-weather}
+wind_direction_profile <- as.data.table(df_raw)[, .N, by = Wind_Direction][order(-N, Wind_Direction)]
+weather_profile <- as.data.table(df_raw)[, .N, by = Weather_Condition][order(-N, Weather_Condition)]
+
+wind_focus <- wind_direction_profile[
+  Wind_Direction %in% c("N", "North", "S", "South", "E", "East", "W", "West")
+]
+
+fwrite(wind_direction_profile, file.path(output_dir, "phase2_wind_direction_profile.csv"))
+fwrite(weather_profile, file.path(output_dir, "phase2_weather_profile.csv"))
+
+knitr::kable(wind_focus, caption = "Wind direction duplicate label check")
+knitr::kable(head(weather_profile, 12), caption = "Top weather labels")
+```
+
+```{r phase-2-summary}
+profiling_summary <- data.table(
+  finding = c(
+    "Dimensions match the execution plan",
+    "County counts match the Long Island scope",
+    "Severity counts match the execution plan",
+    "End_Lat and End_Lng remain heavily missing",
+    "Precipitation and Wind_Chill remain too sparse for core clustering use",
+    "Five binary roadway flags carry no signal",
+    "Duration still shows extreme right-tail outliers",
+    "Distance includes many zero values",
+    "Wind direction labels need normalization",
+    "Weather labels still need grouping before clustering"
+  ),
+  status = c(
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed",
+    "Confirmed"
+  )
+)
+
+fwrite(profiling_summary, file.path(output_dir, "phase2_profiling_summary.csv"))
+
+knitr::kable(profiling_summary, caption = "Phase 2 profiling summary")
+```
+
+# Phase 3: Feature Engineering
+
+This phase derives the analysis-ready fields needed for the clustering inputs while keeping the original cleaned dataset unchanged in `df_raw`.
+
+```{r phase-3-start}
+df_phase3 <- as.data.table(copy(df_raw))
+```
+
+```{r phase-3-temporal-features}
+df_phase3[, Start_Time_Parsed := lubridate::ymd_hms(Start_Time, quiet = TRUE)]
+
+df_phase3[, hour := lubridate::hour(Start_Time_Parsed)]
+df_phase3[, month := lubridate::month(Start_Time_Parsed)]
+df_phase3[, weekday := factor(
+  weekdays(as.Date(Start_Time_Parsed)),
+  levels = ordered_weekdays,
+  ordered = TRUE
+)]
+df_phase3[, weekend := weekdays(as.Date(Start_Time_Parsed)) %in% c("Saturday", "Sunday")]
+df_phase3[, hour_band := dplyr::case_when(
+  hour >= 0 & hour <= 5 ~ "Early_AM",
+  hour >= 6 & hour <= 9 ~ "AM_Rush",
+  hour >= 10 & hour <= 14 ~ "Midday",
+  hour >= 15 & hour <= 18 ~ "PM_Rush",
+  hour >= 19 & hour <= 21 ~ "Evening",
+  hour >= 22 & hour <= 23 ~ "Late_Night",
+  TRUE ~ NA_character_
+)]
+df_phase3[, hour_band := factor(
+  hour_band,
+  levels = c("Early_AM", "AM_Rush", "Midday", "PM_Rush", "Evening", "Late_Night"),
+  ordered = TRUE
+)]
+df_phase3[, season := dplyr::case_when(
+  month %in% c(12L, 1L, 2L) ~ "Winter",
+  month %in% c(3L, 4L, 5L) ~ "Spring",
+  month %in% c(6L, 7L, 8L) ~ "Summer",
+  month %in% c(9L, 10L, 11L) ~ "Fall",
+  TRUE ~ NA_character_
+)]
+df_phase3[, season := factor(
+  season,
+  levels = c("Winter", "Spring", "Summer", "Fall"),
+  ordered = TRUE
+)]
+df_phase3[, rush_hour := hour %in% c(6L, 7L, 8L, 9L, 15L, 16L, 17L, 18L)]
+
+temporal_na_check <- data.table(
+  feature = c("Start_Time_Parsed", "hour", "month", "weekday", "weekend", "hour_band", "season", "rush_hour"),
+  missing_n = c(
+    sum(is.na(df_phase3$Start_Time_Parsed)),
+    sum(is.na(df_phase3$hour)),
+    sum(is.na(df_phase3$month)),
+    sum(is.na(df_phase3$weekday)),
+    sum(is.na(df_phase3$weekend)),
+    sum(is.na(df_phase3$hour_band)),
+    sum(is.na(df_phase3$season)),
+    sum(is.na(df_phase3$rush_hour))
+  )
+)
+
+if (any(temporal_na_check$missing_n > 0)) {
+  stop("Phase 3 temporal feature derivation created unexpected missing values.")
+}
+
+fwrite(temporal_na_check, file.path(output_dir, "phase3_temporal_check.csv"))
+
+knitr::kable(temporal_na_check, caption = "Phase 3 temporal feature check")
+```
+
+```{r phase-3-duration}
+duration_values <- as.numeric(df_phase3$Duration_Minutes)
+duration_cap_99 <- as.numeric(quantile(duration_values, 0.99, na.rm = TRUE))
+df_phase3[, Duration_cap := pmin(duration_values, duration_cap_99)]
+df_phase3[, log_Duration := log1p(Duration_cap)]
+
+duration_engineering_summary <- data.table(
+  metric = c("99th percentile cap", "Median log_Duration", "Max log_Duration"),
+  value = c(
+    duration_cap_99,
+    median(df_phase3$log_Duration, na.rm = TRUE),
+    max(df_phase3$log_Duration, na.rm = TRUE)
+  )
+)
+
+fwrite(duration_engineering_summary, file.path(output_dir, "phase3_duration_engineering.csv"))
+
+knitr::kable(duration_engineering_summary, caption = "Phase 3 duration treatment")
+```
+
+```{r phase-3-weather-group}
+weather_counts <- as.data.table(df_phase3)[, .N, by = Weather_Condition]
+rare_weather <- weather_counts[N < 30, Weather_Condition]
+
+df_phase3[, weather_group := dplyr::case_when(
+  Weather_Condition %in% weather_group_map$Clear ~ "Clear",
+  Weather_Condition %in% weather_group_map$Cloudy ~ "Cloudy",
+  Weather_Condition %in% weather_group_map$Rain ~ "Rain",
+  Weather_Condition %in% weather_group_map$Snow_Ice ~ "Snow_Ice",
+  Weather_Condition %in% weather_group_map$Fog_Haze ~ "Fog_Haze",
+  grepl("Thunder", Weather_Condition, ignore.case = TRUE) ~ "Thunderstorm",
+  Weather_Condition %in% rare_weather ~ "Other",
+  TRUE ~ "Other"
+)]
+
+df_phase3[, weather_group := factor(
+  weather_group,
+  levels = c("Clear", "Cloudy", "Rain", "Snow_Ice", "Fog_Haze", "Thunderstorm", "Other")
+)]
+
+weather_group_profile <- as.data.table(df_phase3)[, .N, by = weather_group][order(-N)]
+fwrite(weather_group_profile, file.path(output_dir, "phase3_weather_group_profile.csv"))
+
+knitr::kable(weather_group_profile, caption = "Phase 3 weather group profile")
+```
+
+```{r phase-3-wind-direction}
+df_phase3[, wind_dir_norm := normalize_wind_direction(Wind_Direction)]
+
+wind_direction_summary <- as.data.table(df_phase3)[, .N, by = wind_dir_norm][order(-N)]
+
+if (length(levels(df_phase3$wind_dir_norm)) > 9) {
+  stop("Phase 3 wind direction normalization produced too many levels.")
+}
+
+fwrite(wind_direction_summary, file.path(output_dir, "phase3_wind_direction_normalized.csv"))
+
+knitr::kable(wind_direction_summary, caption = "Phase 3 normalized wind direction profile")
+```
+
+```{r phase-3-binary-audit}
+zero_variance_flags <- c("Bump", "Roundabout", "Turning_Loop", "Traffic_Calming", "No_Exit")
+near_zero_flags <- c("Give_Way", "Station", "Railway", "Amenity")
+retained_flags <- c("Crossing", "Junction", "Traffic_Signal", "Stop")
+
+binary_audit <- data.table(
+  flag = c(zero_variance_flags, near_zero_flags, retained_flags),
+  true_count = vapply(
+    df_phase3[, c(zero_variance_flags, near_zero_flags, retained_flags), with = FALSE],
+    function(column) sum(as.logical(column), na.rm = TRUE),
+    integer(1)
+  )
+)
+
+binary_audit[, true_pct := round(100 * true_count / nrow(df_phase3), 4)]
+binary_audit[, decision := c(
+  rep("Exclude: zero variance", length(zero_variance_flags)),
+  rep("Exclude: near-zero variance", length(near_zero_flags)),
+  rep("Retain for scenario matrix", length(retained_flags))
+)]
+
+for (flag_name in retained_flags) {
+  df_phase3[, (flag_name) := factor(
+    as.logical(get(flag_name)),
+    levels = c(FALSE, TRUE),
+    labels = c("FALSE", "TRUE")
+  )]
+}
+
+fwrite(binary_audit, file.path(output_dir, "phase3_binary_audit.csv"))
+
+knitr::kable(binary_audit, caption = "Phase 3 binary flag audit")
+```
+
+```{r phase-3-summary}
+phase_3_summary <- data.table(
+  feature_group = c(
+    "Temporal features",
+    "Duration treatment",
+    "Weather grouping",
+    "Wind normalization",
+    "Binary flag audit"
+  ),
+  status = c(
+    "Added hour, hour_band, weekday, weekend, month, season, rush_hour",
+    "Added Duration_cap and log_Duration",
+    "Added weather_group with 7 levels",
+    "Added wind_dir_norm with at most 9 levels",
+    "Marked zero and near-zero flags for exclusion; retained core road-context flags"
+  )
+)
+
+fwrite(phase_3_summary, file.path(output_dir, "phase3_summary.csv"))
+
+knitr::kable(phase_3_summary, caption = "Phase 3 feature engineering summary")
+```
+
+# Phase 4: Build Clustering Input Matrices
+
+This phase constructs the final matrices that will be used by the clustering methods. Nothing outside these matrices should enter the clustering algorithms.
+
+```{r phase-4-scenario-matrix}
+df_scenario_base <- as.data.table(copy(df_phase3))
+
+df_scenario_base[, weekend := factor(
+  weekend,
+  levels = c(FALSE, TRUE),
+  labels = c("FALSE", "TRUE")
+)]
+df_scenario_base[, rush_hour := factor(
+  rush_hour,
+  levels = c(FALSE, TRUE),
+  labels = c("FALSE", "TRUE")
+)]
+df_scenario_base[, Sunrise_Sunset := factor(Sunrise_Sunset)]
+
+scenario_factor_cols <- c(
+  "hour_band", "weekday", "weekend", "season", "rush_hour",
+  "Sunrise_Sunset", "weather_group", "Crossing", "Junction",
+  "Traffic_Signal", "Stop"
+)
+
+scenario_numeric_cols <- c(
+  "Temperature(F)", "Humidity(%)", "Pressure(in)",
+  "Visibility(mi)", "Wind_Speed(mph)"
+)
+
+if (mean(is.na(df_scenario_base$log_Duration)) < 0.05) {
+  scenario_numeric_cols <- c(scenario_numeric_cols, "log_Duration")
+}
+
+scenario_columns <- c(scenario_factor_cols, scenario_numeric_cols)
+
+df_scenario <- df_scenario_base[, ..scenario_columns]
+
+excluded_columns <- c(
+  "Severity", "ID", "Source", "Description", "Street", "City", "Zipcode", "nzip",
+  "Start_Lat", "Start_Lng", "End_Lat", "End_Lng", "County", "Distance(mi)",
+  "Precipitation(in)", "Wind_Chill(F)", "Bump", "Roundabout", "Turning_Loop",
+  "Traffic_Calming", "No_Exit", "Give_Way", "Station", "Railway", "Amenity"
+)
+
+unexpected_excluded <- intersect(names(df_scenario), excluded_columns)
+if (length(unexpected_excluded) > 0) {
+  stop(
+    paste(
+      "Excluded columns were found in df_scenario:",
+      paste(unexpected_excluded, collapse = ", ")
+    )
+  )
+}
+
+numeric_imputation_log <- data.table(
+  column = character(),
+  missing_before = integer(),
+  missing_pct = numeric(),
+  imputation = character()
+)
+
+for (column_name in scenario_numeric_cols) {
+  missing_before <- sum(is.na(df_scenario[[column_name]]))
+  if (!missing_before) {
+    next
+  }
+
+  missing_pct <- 100 * mean(is.na(df_scenario[[column_name]]))
+  median_value <- median(df_scenario[[column_name]], na.rm = TRUE)
+  df_scenario[is.na(get(column_name)), (column_name) := median_value]
+
+  numeric_imputation_log <- rbind(
+    numeric_imputation_log,
+    data.table(
+      column = column_name,
+      missing_before = missing_before,
+      missing_pct = round(missing_pct, 4),
+      imputation = "Median"
+    )
+  )
+}
+
+factor_imputation_log <- data.table(
+  column = character(),
+  missing_before = integer(),
+  rule_applied = character()
+)
+
+for (column_name in scenario_factor_cols) {
+  missing_before <- sum(is.na(df_scenario[[column_name]]))
+  if (!missing_before) {
+    next
+  }
+
+  if (missing_before < 10) {
+    fill_value <- mode_value(df_scenario[[column_name]])
+    df_scenario[is.na(get(column_name)), (column_name) := fill_value]
+    rule_applied <- "Mode"
+  } else {
+    df_scenario[[column_name]] <- addNA(df_scenario[[column_name]])
+    levels(df_scenario[[column_name]])[is.na(levels(df_scenario[[column_name]]))] <- "Unknown"
+    rule_applied <- "Unknown level"
+  }
+
+  factor_imputation_log <- rbind(
+    factor_imputation_log,
+    data.table(
+      column = column_name,
+      missing_before = missing_before,
+      rule_applied = rule_applied
+    )
+  )
+}
+
+scenario_na_total <- sum(is.na(df_scenario))
+if (scenario_na_total > 0) {
+  stop("df_scenario still contains missing values after Phase 4 imputations.")
+}
+
+scenario_column_profile <- data.table(
+  column = names(df_scenario),
+  type = vapply(df_scenario, function(column) class(column)[1], character(1))
+)
+
+scenario_matrix_summary <- data.table(
+  metric = c("Rows", "Columns", "Factor columns", "Numeric columns", "Total NAs"),
+  value = c(
+    nrow(df_scenario),
+    ncol(df_scenario),
+    length(scenario_factor_cols),
+    length(scenario_numeric_cols),
+    scenario_na_total
+  )
+)
+
+fwrite(scenario_column_profile, file.path(output_dir, "phase4_scenario_columns.csv"))
+fwrite(numeric_imputation_log, file.path(output_dir, "phase4_numeric_imputation_log.csv"))
+fwrite(factor_imputation_log, file.path(output_dir, "phase4_factor_imputation_log.csv"))
+fwrite(scenario_matrix_summary, file.path(output_dir, "phase4_scenario_matrix_summary.csv"))
+
+knitr::kable(scenario_matrix_summary, caption = "Phase 4 scenario matrix summary")
+knitr::kable(scenario_column_profile, caption = "Phase 4 scenario column list")
+```
+
+```{r phase-4-spatial-matrix}
+if (any(is.na(df_phase3$Start_Lat)) || any(is.na(df_phase3$Start_Lng))) {
+  stop("Start_Lat or Start_Lng contains missing values, so df_spatial cannot be built.")
+}
+
+lat0 <- 40.8
+lng0 <- -73.2
+
+df_spatial <- data.table(
+  x_km = (df_phase3$Start_Lng - lng0) * 111.32 * cos(lat0 * pi / 180),
+  y_km = (df_phase3$Start_Lat - lat0) * 110.574
+)
+
+spatial_extent <- data.table(
+  metric = c("Rows", "Columns", "x_km min", "x_km max", "x_km span", "y_km min", "y_km max", "y_km span"),
+  value = c(
+    nrow(df_spatial),
+    ncol(df_spatial),
+    min(df_spatial$x_km),
+    max(df_spatial$x_km),
+    diff(range(df_spatial$x_km)),
+    min(df_spatial$y_km),
+    max(df_spatial$y_km),
+    diff(range(df_spatial$y_km))
+  )
+)
+
+if (sum(is.na(df_spatial)) > 0) {
+  stop("df_spatial contains missing values after coordinate projection.")
+}
+
+fwrite(spatial_extent, file.path(output_dir, "phase4_spatial_extent.csv"))
+
+knitr::kable(spatial_extent, caption = "Phase 4 spatial matrix extent")
+```
+
+```{r phase-4-summary}
+phase_4_summary <- data.table(
+  matrix = c("df_scenario", "df_spatial"),
+  rows = c(nrow(df_scenario), nrow(df_spatial)),
+  columns = c(ncol(df_scenario), ncol(df_spatial)),
+  na_count = c(sum(is.na(df_scenario)), sum(is.na(df_spatial)))
+)
+
+fwrite(phase_4_summary, file.path(output_dir, "phase4_summary.csv"))
+
+knitr::kable(phase_4_summary, caption = "Phase 4 matrix readiness summary")
+```
+
+# Phase 5: k-Prototypes Scenario Clustering
+
+This phase runs the candidate mixed-type clustering solutions on `df_scenario` and stores the diagnostics needed for later model selection.
+
+```{r phase-5-type-check}
+scenario_type_check <- data.table(
+  column = names(df_scenario),
+  class = vapply(df_scenario, function(column) class(column)[1], character(1))
+)
+
+factor_check <- scenario_type_check[column %in% scenario_factor_cols]
+numeric_check <- scenario_type_check[column %in% scenario_numeric_cols]
+
+if (!all(vapply(df_scenario[, ..scenario_factor_cols], is.factor, logical(1)))) {
+  stop("One or more Phase 5 scenario factor columns are not stored as factors.")
+}
+
+if (!all(vapply(df_scenario[, ..scenario_numeric_cols], is.numeric, logical(1)))) {
+  stop("One or more Phase 5 scenario numeric columns are not stored as numeric values.")
+}
+
+fwrite(scenario_type_check, file.path(output_dir, "phase5_scenario_type_check.csv"))
+
+knitr::kable(scenario_type_check, caption = "Phase 5 scenario type check")
+```
+
+```{r phase-5-kproto-candidates}
+candidate_k <- 3:8
+kp_results <- list()
+
+for (k_value in candidate_k) {
+  set.seed(42)
+  kp_results[[as.character(k_value)]] <- clustMixType::kproto(
+    x = df_scenario,
+    k = k_value,
+    lambda = NULL,
+    nstart = 10,
+    type = "gower",
+    keep.data = TRUE,
+    verbose = FALSE
+  )
+}
+```
+
+```{r phase-5-cluster-summaries}
+cluster_fit_summary <- rbindlist(
+  lapply(names(kp_results), function(k_label) {
+    model_fit <- kp_results[[k_label]]
+    cluster_sizes <- table(model_fit$cluster)
+
+    data.table(
+      k = as.integer(k_label),
+      tot_withinss = model_fit$tot.withinss,
+      lambda = if (is.null(model_fit$lambda)) NA_real_ else as.numeric(model_fit$lambda)[1],
+      min_cluster_size = min(cluster_sizes),
+      max_cluster_size = max(cluster_sizes),
+      n_clusters = length(cluster_sizes),
+      potentially_unstable = min(cluster_sizes) < 200
+    )
+  })
+)
+
+cluster_size_table <- rbindlist(
+  lapply(names(kp_results), function(k_label) {
+    model_fit <- kp_results[[k_label]]
+    data.table(
+      k = as.integer(k_label),
+      cluster = names(table(model_fit$cluster)),
+      size = as.integer(table(model_fit$cluster))
+    )
+  })
+)
+
+dominance_checks <- rbindlist(
+  lapply(names(kp_results), function(k_label) {
+    model_fit <- kp_results[[k_label]]
+    clustered_data <- copy(df_scenario)
+    clustered_data[, cluster := factor(model_fit$cluster)]
+
+    rbindlist(lapply(scenario_factor_cols, function(column_name) {
+      clustered_data[, .(
+        dominant_share = round(dominant_share(get(column_name)), 4)
+      ), by = cluster][
+        , `:=`(
+          k = as.integer(k_label),
+          feature = column_name
+        )
+      ]
+    }), fill = TRUE)
+  }),
+  fill = TRUE
+)
+
+dominance_flags <- dominance_checks[
+  dominant_share >= 0.9
+][order(k, cluster, feature)]
+
+fwrite(cluster_fit_summary, file.path(output_dir, "phase5_kproto_fit_summary.csv"))
+fwrite(cluster_size_table, file.path(output_dir, "phase5_kproto_cluster_sizes.csv"))
+fwrite(dominance_checks, file.path(output_dir, "phase5_kproto_dominance_checks.csv"))
+fwrite(dominance_flags, file.path(output_dir, "phase5_kproto_dominance_flags.csv"))
+
+knitr::kable(cluster_fit_summary, caption = "Phase 5 k-prototypes fit summary")
+knitr::kable(cluster_size_table, caption = "Phase 5 cluster sizes by k")
+```
+
+```{r phase-5-elbow-plot, fig.height=4.5, fig.width=7}
+elbow_plot <- ggplot2::ggplot(
+  cluster_fit_summary,
+  ggplot2::aes(x = k, y = tot_withinss)
+) +
+  ggplot2::geom_line(color = "#1f78b4", linewidth = 0.8) +
+  ggplot2::geom_point(color = "#1f78b4", size = 2.4) +
+  ggplot2::geom_text(
+    ggplot2::aes(label = k),
+    nudge_y = max(cluster_fit_summary$tot_withinss) * 0.01,
+    size = 3.5
+  ) +
+  ggplot2::labs(
+    title = "Phase 5 Elbow Plot",
+    x = "Number of clusters (k)",
+    y = "Total within-cluster distance"
+  ) +
+  ggplot2::theme_minimal()
+
+print(elbow_plot)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase5_kproto_elbow_plot.png"),
+  plot = elbow_plot,
+  width = 7,
+  height = 4.5,
+  dpi = 300
+)
+```
+
+```{r phase-5-summary}
+phase_5_summary <- data.table(
+  checkpoint = c(
+    "Candidate solutions created",
+    "k range covered",
+    "Elbow plot saved",
+    "Cluster sizes recorded",
+    "Dominance checks recorded"
+  ),
+  status = c(
+    length(kp_results) == 6,
+    paste(candidate_k, collapse = ", "),
+    file.exists(file.path(output_dir, "phase5_kproto_elbow_plot.png")),
+    nrow(cluster_size_table) > 0,
+    nrow(dominance_checks) > 0
+  )
+)
+
+fwrite(phase_5_summary, file.path(output_dir, "phase5_summary.csv"))
+
+knitr::kable(phase_5_summary, caption = "Phase 5 readiness summary")
+```
+
+# Phase 6: Cluster Validation and Stability
+
+This phase uses internal validation, bootstrap stability, and cluster profile checks to choose a defensible value of `k`.
+
+```{r phase-6-internal-validation}
+validation_input <- copy(df_scenario)
+validation_rows <- nrow(df_scenario)
+validation_repeat_results <- NULL
+
+if (identical(phase6_validation_mode, "consensus_sampled")) {
+  validation_rows <- min(phase6_validation_sample_n, nrow(df_scenario))
+  validation_repeat_results <- rbindlist(
+    lapply(seq_len(phase6_validation_repeats), function(repeat_id) {
+      set.seed(42 + repeat_id)
+      sampled_index <- sort(sample.int(nrow(df_scenario), validation_rows))
+      validation_input_repeat <- copy(df_scenario[sampled_index])
+
+      val_repeat <- clustMixType::validation_kproto(
+        method = "silhouette",
+        data = validation_input_repeat,
+        k = candidate_k,
+        nstart = 5,
+        type = "gower",
+        kp_obj = "all",
+        verbose = FALSE
+      )
+
+      data.table(
+        repeat_id = repeat_id,
+        validation_rows = validation_rows,
+        repeat_k_opt = as.integer(val_repeat$k_opt),
+        k = as.integer(names(val_repeat$indices)),
+        silhouette = as.numeric(val_repeat$indices)
+      )
+    }),
+    fill = TRUE
+  )
+
+  validation_optimal_counts <- unique(
+    validation_repeat_results[, .(repeat_id, repeat_k_opt)]
+  )[, .(optimal_repeat_count = .N), by = .(k = repeat_k_opt)]
+
+  validation_table <- validation_repeat_results[, .(
+    silhouette = mean(silhouette),
+    sd_silhouette = stats::sd(silhouette),
+    median_silhouette = stats::median(silhouette)
+  ), by = k]
+
+  validation_table <- merge(
+    validation_table,
+    validation_optimal_counts,
+    by = "k",
+    all.x = TRUE
+  )
+  validation_table[is.na(optimal_repeat_count), optimal_repeat_count := 0L]
+  validation_table[, optimal_repeat_share := round(optimal_repeat_count / phase6_validation_repeats, 4)]
+  validation_table <- validation_table[order(-optimal_repeat_count, -silhouette, k)]
+  validation_optimal_k <- validation_table$k[1]
+} else {
+  if (identical(phase6_validation_mode, "sampled")) {
+    set.seed(42)
+    validation_rows <- min(phase6_validation_sample_n, nrow(df_scenario))
+    sampled_index <- sort(sample.int(nrow(df_scenario), validation_rows))
+    validation_input <- copy(df_scenario[sampled_index])
+  }
+
+  val_result <- clustMixType::validation_kproto(
+    method = "silhouette",
+    data = validation_input,
+    k = candidate_k,
+    nstart = 5,
+    type = "gower",
+    kp_obj = "all",
+    verbose = FALSE
+  )
+
+  validation_table <- data.table(
+    k = as.integer(names(val_result$indices)),
+    silhouette = as.numeric(val_result$indices),
+    sd_silhouette = NA_real_,
+    median_silhouette = as.numeric(val_result$indices),
+    optimal_repeat_count = 1L,
+    optimal_repeat_share = 1
+  )[order(-silhouette, k)]
+  validation_optimal_k <- as.integer(val_result$k_opt)
+}
+
+validation_metadata <- data.table(
+  setting = c("validation_mode", "validation_rows", "full_rows", "sample_fraction", "validation_repeats"),
+  value = c(
+    phase6_validation_mode,
+    validation_rows,
+    nrow(df_scenario),
+    round(validation_rows / nrow(df_scenario), 4),
+    phase6_validation_repeats
+  )
+)
+
+top_two_k <- head(validation_table$k, 2)
+
+fwrite(validation_table, file.path(output_dir, "phase6_validation_indices.csv"))
+fwrite(validation_metadata, file.path(output_dir, "phase6_validation_metadata.csv"))
+if (!is.null(validation_repeat_results)) {
+  fwrite(validation_repeat_results, file.path(output_dir, "phase6_validation_repeats.csv"))
+}
+
+knitr::kable(validation_table, caption = "Phase 6 internal validation indices")
+knitr::kable(validation_metadata, caption = "Phase 6 validation run settings")
+if (!is.null(validation_repeat_results)) {
+  knitr::kable(validation_repeat_results, caption = "Phase 6 validation repeat detail")
+}
+```
+
+```{r phase-6-internal-validation-archived, eval=FALSE, include=FALSE}
+# Archived full-data validation reference for a later high-memory rerun.
+# Use this only on a machine that can handle the full pairwise distance load.
+val_result_full <- clustMixType::validation_kproto(
+  method = "silhouette",
+  data = df_scenario,
+  k = candidate_k,
+  nstart = 5,
+  type = "gower",
+  kp_obj = "all",
+  verbose = FALSE
+)
+```
+
+```{r phase-6-stability}
+stability_input <- copy(df_scenario)
+stability_rows <- nrow(df_scenario)
+stability_models <- kp_results[as.character(top_two_k)]
+stability_repeat_results <- NULL
+stability_bootstrap <- data.table()
+
+if (identical(phase6_stability_mode, "consensus_sampled")) {
+  stability_rows <- min(phase6_stability_sample_n, nrow(df_scenario))
+
+  consensus_stability_outputs <- lapply(seq_len(phase6_stability_repeats), function(repeat_id) {
+      set.seed(420 + repeat_id)
+      stability_index <- sort(sample.int(nrow(df_scenario), stability_rows))
+      stability_input_repeat <- copy(df_scenario[stability_index])
+
+      repeat_models <- lapply(top_two_k, function(k_value) {
+        set.seed(420 + repeat_id)
+        clustMixType::kproto(
+          x = stability_input_repeat,
+          k = k_value,
+          lambda = NULL,
+          nstart = 5,
+          type = "gower",
+          keep.data = TRUE,
+          verbose = FALSE
+        )
+      })
+      names(repeat_models) <- as.character(top_two_k)
+
+      repeat_stability_outputs <- lapply(top_two_k, function(k_value) {
+        stab <- clustMixType::stability_kproto(
+          object = repeat_models[[as.character(k_value)]],
+          method = c("rand", "jaccard"),
+          B = phase6_stability_bootstraps,
+          verbose = FALSE,
+          nstart = 5
+        )
+
+        bootstrap_dt <- as.data.table(stab[[2]])
+        bootstrap_dt[, `:=`(k = k_value, repeat_id = repeat_id)]
+
+        list(
+          summary_dt = data.table(
+            repeat_id = repeat_id,
+            k = k_value,
+            rand = as.numeric(stab[[1]]["R"]),
+            jaccard = as.numeric(stab[[1]]["J"])
+          ),
+          bootstrap_dt = bootstrap_dt
+        )
+      })
+
+      list(
+        summary_dt = rbindlist(lapply(repeat_stability_outputs, `[[`, "summary_dt"), fill = TRUE),
+        bootstrap_dt = rbindlist(lapply(repeat_stability_outputs, `[[`, "bootstrap_dt"), fill = TRUE)
+      )
+    })
+
+  stability_repeat_results <- rbindlist(
+    lapply(consensus_stability_outputs, `[[`, "summary_dt"),
+    fill = TRUE
+  )
+  stability_bootstrap <- rbindlist(
+    lapply(consensus_stability_outputs, `[[`, "bootstrap_dt"),
+    fill = TRUE
+  )
+
+  stability_summary <- stability_repeat_results[, .(
+    rand = mean(rand),
+    jaccard = mean(jaccard),
+    sd_rand = stats::sd(rand),
+    sd_jaccard = stats::sd(jaccard),
+    stability_repeats = .N,
+    stable_repeat_share = round(mean(jaccard >= 0.6), 4),
+    strong_repeat_share = round(mean(jaccard >= 0.75), 4),
+    stable_jaccard = mean(jaccard >= 0.6) >= 0.5,
+    strong_jaccard = mean(jaccard >= 0.75) >= 0.5
+  ), by = k][order(-jaccard, -rand, k)]
+} else {
+  if (identical(phase6_stability_mode, "sampled")) {
+    set.seed(42)
+    stability_rows <- min(phase6_stability_sample_n, nrow(df_scenario))
+    stability_index <- sort(sample.int(nrow(df_scenario), stability_rows))
+    stability_input <- copy(df_scenario[stability_index])
+
+    stability_models <- lapply(top_two_k, function(k_value) {
+      set.seed(42)
+      clustMixType::kproto(
+        x = stability_input,
+        k = k_value,
+        lambda = NULL,
+        nstart = 5,
+        type = "gower",
+        keep.data = TRUE,
+        verbose = FALSE
+      )
+    })
+    names(stability_models) <- as.character(top_two_k)
+  }
+
+  stability_results <- lapply(top_two_k, function(k_value) {
+    set.seed(42)
+    stab <- clustMixType::stability_kproto(
+      object = stability_models[[as.character(k_value)]],
+      method = c("rand", "jaccard"),
+      B = phase6_stability_bootstraps,
+      verbose = FALSE,
+      nstart = 5
+    )
+
+    list(
+      k = k_value,
+      summary = stab[[1]],
+      bootstrap = as.data.table(stab[[2]])
+    )
+  })
+
+  stability_summary <- rbindlist(
+    lapply(stability_results, function(result) {
+      data.table(
+        k = result$k,
+        rand = as.numeric(result$summary["R"]),
+        jaccard = as.numeric(result$summary["J"]),
+        sd_rand = NA_real_,
+        sd_jaccard = NA_real_,
+        stability_repeats = 1L,
+        stable_repeat_share = as.numeric(result$summary["J"]) >= 0.6,
+        strong_repeat_share = as.numeric(result$summary["J"]) >= 0.75,
+        stable_jaccard = as.numeric(result$summary["J"]) >= 0.6,
+        strong_jaccard = as.numeric(result$summary["J"]) >= 0.75
+      )
+    })
+  )[order(-jaccard, -rand, k)]
+
+  stability_bootstrap <- rbindlist(
+    lapply(stability_results, function(result) {
+      bootstrap_dt <- copy(result$bootstrap)
+      bootstrap_dt[, `:=`(k = result$k, repeat_id = 1L)]
+      bootstrap_dt
+    }),
+    fill = TRUE
+  )
+}
+
+stability_metadata <- data.table(
+  setting = c("stability_mode", "stability_rows", "full_rows", "sample_fraction", "bootstrap_reps", "stability_repeats"),
+  value = c(
+    phase6_stability_mode,
+    stability_rows,
+    nrow(df_scenario),
+    round(stability_rows / nrow(df_scenario), 4),
+    phase6_stability_bootstraps,
+    phase6_stability_repeats
+  )
+)
+
+fwrite(stability_summary, file.path(output_dir, "phase6_stability_summary.csv"))
+fwrite(stability_bootstrap, file.path(output_dir, "phase6_stability_bootstrap.csv"))
+fwrite(stability_metadata, file.path(output_dir, "phase6_stability_metadata.csv"))
+if (!is.null(stability_repeat_results)) {
+  fwrite(stability_repeat_results, file.path(output_dir, "phase6_stability_repeats.csv"))
+}
+
+knitr::kable(stability_summary, caption = "Phase 6 stability summary")
+knitr::kable(stability_metadata, caption = "Phase 6 stability run settings")
+if (!is.null(stability_repeat_results)) {
+  knitr::kable(stability_repeat_results, caption = "Phase 6 stability repeat detail")
+}
+```
+
+```{r phase-6-stability-archived, eval=FALSE, include=FALSE}
+# Archived full-data stability reference for a later high-memory rerun.
+stability_results_full <- lapply(top_two_k, function(k_value) {
+  set.seed(42)
+  clustMixType::stability_kproto(
+    object = kp_results[[as.character(k_value)]],
+    method = c("rand", "jaccard"),
+    B = 50,
+    verbose = FALSE,
+    nstart = 5
+  )
+})
+```
+
+```{r phase-6-select-k}
+selected_k <- validation_table$k[1]
+selected_stability <- stability_summary[k == selected_k, jaccard]
+
+if (length(selected_stability) == 1 && selected_stability < 0.5 && nrow(stability_summary) > 1) {
+  selected_k <- stability_summary[order(-jaccard, -rand, k)][1, k]
+}
+
+selected_model <- kp_results[[as.character(selected_k)]]
+selected_jaccard <- if (selected_k %in% stability_summary$k) {
+  stability_summary[k == selected_k, round(jaccard, 4)]
+} else {
+  NA_real_
+}
+
+selection_summary <- data.table(
+  metric = c(
+    "Validation method",
+    "Validation mode",
+    "Validation rows",
+    "Stability mode",
+    "Stability rows",
+    "Stability bootstraps",
+    "Validation-optimal k",
+    "Top two k values for stability",
+    "Selected k",
+    "Selected k Jaccard"
+  ),
+  value = c(
+    "silhouette",
+    phase6_validation_mode,
+    validation_rows,
+    phase6_stability_mode,
+    stability_rows,
+    phase6_stability_bootstraps,
+    validation_optimal_k,
+    paste(top_two_k, collapse = ", "),
+    selected_k,
+    selected_jaccard
+  )
+)
+
+fwrite(selection_summary, file.path(output_dir, "phase6_selection_summary.csv"))
+
+knitr::kable(selection_summary, caption = "Phase 6 k-selection summary")
+```
+
+```{r phase-6-cluster-profiles}
+profile_plot_path <- file.path(output_dir, "phase6_cluster_profiles.pdf")
+grDevices::pdf(profile_plot_path, width = 12, height = 8)
+clustMixType::clprofiles(selected_model, df_scenario)
+grDevices::dev.off()
+
+selected_cluster_data <- copy(df_scenario)
+selected_cluster_data[, cluster := factor(selected_model$cluster)]
+
+cluster_profile_summary <- selected_cluster_data[, .(
+  dominant_hour_band = mode_value(hour_band),
+  dominant_weather_group = mode_value(weather_group),
+  dominant_weekend = mode_value(weekend),
+  dominant_sunrise_sunset = mode_value(Sunrise_Sunset),
+  dominant_junction = mode_value(Junction),
+  dominant_traffic_signal = mode_value(Traffic_Signal),
+  mean_temperature = round(mean(`Temperature(F)`), 2),
+  mean_visibility = round(mean(`Visibility(mi)`), 2),
+  mean_log_duration = round(mean(log_Duration), 3)
+), by = cluster]
+
+cluster_profile_summary[, working_name := dplyr::case_when(
+  dominant_weather_group == "Snow_Ice" ~ "Winter Adverse",
+  dominant_sunrise_sunset == "Night" & dominant_weather_group %in% c("Fog_Haze", "Rain", "Thunderstorm") ~ "Night Low-Visibility",
+  dominant_weekend == "TRUE" & dominant_traffic_signal == "TRUE" ~ "Weekend Surface Road",
+  dominant_hour_band %in% c("AM_Rush", "PM_Rush") & dominant_junction == "TRUE" ~ "Rush Corridor",
+  TRUE ~ paste("Scenario Cluster", cluster)
+)]
+
+fwrite(cluster_profile_summary, file.path(output_dir, "phase6_cluster_profile_summary.csv"))
+
+knitr::kable(cluster_profile_summary, caption = "Phase 6 cluster profile summary")
+```
+
+```{r phase-6-summary}
+phase_6_summary <- data.table(
+  checkpoint = c(
+    "Validation indices saved",
+    "Validation metadata saved",
+    "Stability summary saved",
+    "Stability metadata saved",
+    "Selected k assigned",
+    "Cluster profile PDF saved",
+    "Working names assigned"
+  ),
+  status = c(
+    file.exists(file.path(output_dir, "phase6_validation_indices.csv")),
+    file.exists(file.path(output_dir, "phase6_validation_metadata.csv")),
+    file.exists(file.path(output_dir, "phase6_stability_summary.csv")),
+    file.exists(file.path(output_dir, "phase6_stability_metadata.csv")),
+    !is.null(selected_model),
+    file.exists(file.path(output_dir, "phase6_cluster_profiles.pdf")),
+    all(nzchar(cluster_profile_summary$working_name))
+  )
+)
+
+fwrite(phase_6_summary, file.path(output_dir, "phase6_summary.csv"))
+
+knitr::kable(phase_6_summary, caption = "Phase 6 readiness summary")
+```
+
+# Phase 7: DBSCAN Spatial Hotspot Clustering
+
+This phase clusters the projected Long Island coordinates with DBSCAN so the workflow can identify corridor-style hotspot zones.
+
+```{r phase-7-parameter-selection}
+knn_k <- 5L
+dbscan_minpts_grid <- if (run_profile == "full_srs") c(15L, 25L, 40L, 50L, 75L, 100L) else c(40L, 50L, 75L, 100L)
+dbscan_eps_grid <- seq(0.3, 2.0, by = 0.1)
+
+knn_dist <- dbscan::kNNdist(df_spatial, k = knn_k)
+knn_sorted <- sort(knn_dist)
+phase7_total_rows <- nrow(df_spatial)
+phase7_target_cluster_n <- 8L
+phase7_target_noise_pct <- 17.5
+phase7_max_cluster_share_cap <- 60
+
+knn_profile <- data.table(
+  quantile = c("50%", "75%", "90%", "95%", "97.5%", "99%"),
+  value_km = round(as.numeric(quantile(knn_dist, probs = c(0.5, 0.75, 0.9, 0.95, 0.975, 0.99))), 4)
+)
+
+eps_trials <- rbindlist(
+  lapply(dbscan_minpts_grid, function(minPts_value) {
+    rbindlist(lapply(dbscan_eps_grid, function(eps_value) {
+      db_trial <- dbscan::dbscan(df_spatial, eps = eps_value, minPts = minPts_value)
+      cluster_counts <- table(db_trial$cluster)
+      non_noise_sizes <- cluster_counts[names(cluster_counts) != "0"]
+      non_noise_clusters <- sum(as.integer(names(cluster_counts)) > 0)
+      noise_pct <- round(100 * mean(db_trial$cluster == 0), 2)
+
+      data.table(
+        eps = round(eps_value, 2),
+        minPts = minPts_value,
+        non_noise_clusters = non_noise_clusters,
+        noise_pct = noise_pct,
+        max_cluster_size = if (length(non_noise_sizes)) max(as.integer(non_noise_sizes)) else 0L,
+        max_cluster_share_pct = if (length(non_noise_sizes)) round(100 * max(as.integer(non_noise_sizes)) / phase7_total_rows, 2) else 0,
+        size_balance_ok = if (length(non_noise_sizes)) round(100 * max(as.integer(non_noise_sizes)) / phase7_total_rows, 2) <= phase7_max_cluster_share_cap else FALSE,
+        acceptable = non_noise_clusters >= 3 & non_noise_clusters <= 15 & noise_pct >= 5 & noise_pct <= 30 &
+          if (length(non_noise_sizes)) round(100 * max(as.integer(non_noise_sizes)) / phase7_total_rows, 2) <= phase7_max_cluster_share_cap else FALSE
+      )
+    }))
+  }),
+  fill = TRUE
+)
+
+acceptable_trials <- eps_trials[acceptable == TRUE]
+
+if (nrow(acceptable_trials) > 0) {
+  selected_trial <- acceptable_trials[
+    order(abs(non_noise_clusters - phase7_target_cluster_n), abs(noise_pct - phase7_target_noise_pct), max_cluster_share_pct, -minPts, eps)
+  ][1]
+  selection_reason <- "Accepted trial balancing cluster count, noise level, and hotspot size concentration"
+} else {
+  selected_trial <- eps_trials[
+    order(abs(non_noise_clusters - phase7_target_cluster_n), abs(noise_pct - phase7_target_noise_pct), max_cluster_share_pct, -minPts, eps)
+  ][1]
+  selection_reason <- "Fallback trial closest to balanced cluster count, noise level, and hotspot size concentration"
+}
+
+eps_chosen <- selected_trial$eps[[1]]
+minPts_chosen <- selected_trial$minPts[[1]]
+
+parameter_summary <- data.table(
+  metric = c(
+    "kNN distance k",
+    "DBSCAN minPts grid",
+    "DBSCAN eps grid",
+    "Largest cluster share cap (%)",
+    "DBSCAN minPts",
+    "Chosen eps (km)",
+    "Chosen non-noise clusters",
+    "Chosen noise pct",
+    "Chosen largest cluster share pct",
+    "Selection reason"
+  ),
+  value = c(
+    knn_k,
+    paste(dbscan_minpts_grid, collapse = ", "),
+    paste(range(dbscan_eps_grid), collapse = " to "),
+    phase7_max_cluster_share_cap,
+    minPts_chosen,
+    eps_chosen,
+    selected_trial$non_noise_clusters[[1]],
+    selected_trial$noise_pct[[1]],
+    selected_trial$max_cluster_share_pct[[1]],
+    selection_reason
+  )
+)
+
+fwrite(knn_profile, file.path(output_dir, "phase7_knn_profile.csv"))
+fwrite(eps_trials, file.path(output_dir, "phase7_eps_trials.csv"))
+fwrite(parameter_summary, file.path(output_dir, "phase7_parameter_summary.csv"))
+
+knitr::kable(knn_profile, caption = "Phase 7 kNN distance profile")
+knitr::kable(eps_trials, caption = "Phase 7 DBSCAN eps trials")
+knitr::kable(parameter_summary, caption = "Phase 7 selected DBSCAN settings")
+```
+
+```{r phase-7-knn-plot, fig.height=4.5, fig.width=7}
+knn_plot_data <- data.table(
+  point_order = seq_along(knn_sorted),
+  distance_km = knn_sorted
+)
+
+knn_plot <- ggplot2::ggplot(
+  knn_plot_data,
+  ggplot2::aes(x = point_order, y = distance_km)
+) +
+  ggplot2::geom_line(color = "#1f78b4", linewidth = 0.6) +
+  ggplot2::geom_hline(yintercept = eps_chosen, linetype = "dashed", color = "#e31a1c") +
+  ggplot2::labs(
+    title = "Phase 7 kNN Distance Plot",
+    x = "Points sorted by 5-NN distance",
+    y = "5-NN distance (km)"
+  ) +
+  ggplot2::theme_minimal()
+
+print(knn_plot)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase7_knn_distance_plot.png"),
+  plot = knn_plot,
+  width = 7,
+  height = 4.5,
+  dpi = 300
+)
+```
+
+```{r phase-7-dbscan-run}
+db_result <- dbscan::dbscan(df_spatial, eps = eps_chosen, minPts = minPts_chosen)
+
+df_spatial_clusters <- copy(df_spatial)
+df_spatial_clusters[, spatial_cluster := as.integer(db_result$cluster)]
+
+spatial_cluster_sizes <- df_spatial_clusters[, .N, by = spatial_cluster][order(spatial_cluster)]
+largest_non_noise_size <- max(spatial_cluster_sizes[spatial_cluster > 0, N], na.rm = TRUE)
+largest_non_noise_share_pct <- round(100 * largest_non_noise_size / nrow(df_spatial_clusters), 2)
+solution_summary <- data.table(
+  metric = c(
+    "Rows clustered",
+    "Noise pct",
+    "Non-noise clusters",
+    "Largest cluster size",
+    "Largest cluster share pct",
+    "Meets SRS cluster-count target",
+    "Meets SRS noise target",
+    "Meets hotspot-balance target"
+  ),
+  value = c(
+    nrow(df_spatial_clusters),
+    round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2),
+    uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]),
+    largest_non_noise_size,
+    largest_non_noise_share_pct,
+    uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]) >= 3 &
+      uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]) <= 15,
+    round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2) >= 5 &
+      round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2) <= 30,
+    largest_non_noise_share_pct <= phase7_max_cluster_share_cap
+  )
+)
+
+if (!any(df_spatial_clusters$spatial_cluster > 0)) {
+  stop("Phase 7 DBSCAN produced only noise points; adjust eps or minPts.")
+}
+
+fwrite(spatial_cluster_sizes, file.path(output_dir, "phase7_dbscan_cluster_sizes.csv"))
+fwrite(solution_summary, file.path(output_dir, "phase7_solution_summary.csv"))
+
+knitr::kable(spatial_cluster_sizes, caption = "Phase 7 spatial cluster sizes")
+knitr::kable(solution_summary, caption = "Phase 7 DBSCAN solution summary")
+```
+
+```{r phase-7-corridor-assignment}
+lat0 <- 40.8
+lng0 <- -73.2
+
+non_noise_assignments <- df_spatial_clusters[spatial_cluster > 0, .(
+  cluster_size = .N,
+  centroid_x_km = mean(x_km),
+  centroid_y_km = mean(y_km),
+  x_span_km = diff(range(x_km)),
+  y_span_km = diff(range(y_km))
+), by = spatial_cluster][
+  , `:=`(
+    centroid_lat = round((centroid_y_km / 110.574) + lat0, 5),
+    centroid_lng = round((centroid_x_km / (111.32 * cos(lat0 * pi / 180))) + lng0, 5),
+    shape_hint = fifelse(x_span_km >= y_span_km, "east_west", "north_south")
+  )
+]
+
+non_noise_assignments[, corridor_label := dplyr::case_when(
+  centroid_lat >= 40.74 & centroid_lat <= 40.76 ~ "Long Island Expressway (I-495)",
+  centroid_lat >= 40.68 & centroid_lat <= 40.72 ~ "Southern State Parkway",
+  centroid_lat >= 40.78 & centroid_lat <= 40.82 ~ "Northern State Parkway",
+  centroid_lat >= 40.64 & centroid_lat <= 40.68 ~ "Sunrise Highway",
+  centroid_lat >= 40.72 & centroid_lat <= 40.76 & shape_hint == "north_south" ~ "Meadowbrook / Wantagh Pkwy",
+  TRUE ~ "Surface Road Cluster"
+)]
+
+fwrite(non_noise_assignments, file.path(output_dir, "phase7_corridor_assignments.csv"))
+
+knitr::kable(non_noise_assignments, caption = "Phase 7 corridor assignment summary")
+```
+
+```{r phase-7-spatial-map, fig.height=5.5, fig.width=8}
+df_spatial_plot <- copy(df_spatial_clusters)
+df_spatial_plot[, cluster_label := factor(spatial_cluster)]
+
+cluster_levels <- sort(unique(df_spatial_plot$cluster_label))
+non_noise_levels <- setdiff(as.character(cluster_levels), "0")
+cluster_colors <- c(
+  "0" = "#bdbdbd",
+  setNames(grDevices::hcl.colors(length(non_noise_levels), palette = "Dark 3"), non_noise_levels)
+)
+
+spatial_map <- ggplot2::ggplot(
+  df_spatial_plot,
+  ggplot2::aes(x = x_km, y = y_km, color = cluster_label)
+) +
+  ggplot2::geom_point(size = 0.5, alpha = 0.6) +
+  ggplot2::geom_text(
+    data = non_noise_assignments,
+    ggplot2::aes(x = centroid_x_km, y = centroid_y_km, label = spatial_cluster),
+    inherit.aes = FALSE,
+    size = 3.2,
+    fontface = "bold",
+    color = "black"
+  ) +
+  ggplot2::scale_color_manual(values = cluster_colors) +
+  ggplot2::labs(
+    title = "Phase 7 DBSCAN Spatial Hotspots",
+    x = "Projected x (km)",
+    y = "Projected y (km)",
+    color = "Cluster"
+  ) +
+  ggplot2::theme_minimal()
+
+print(spatial_map)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase7_spatial_hotspot_map.png"),
+  plot = spatial_map,
+  width = 8,
+  height = 5.5,
+  dpi = 300
+)
+```
+
+```{r phase-7-spatial-density-heatmap, fig.height=5.5, fig.width=8}
+spatial_density_heatmap <- ggplot2::ggplot(
+  df_spatial_plot,
+  ggplot2::aes(
+    x = x_km,
+    y = y_km,
+    fill = after_stat(log10(count + 1))
+  )
+) +
+  ggplot2::geom_bin2d(bins = 100) +
+  ggplot2::geom_point(
+    data = non_noise_assignments,
+    ggplot2::aes(x = centroid_x_km, y = centroid_y_km),
+    inherit.aes = FALSE,
+    shape = 21,
+    size = 2.6,
+    stroke = 0.5,
+    fill = "white",
+    color = "black"
+  ) +
+  ggplot2::geom_text(
+    data = non_noise_assignments,
+    ggplot2::aes(x = centroid_x_km, y = centroid_y_km, label = spatial_cluster),
+    inherit.aes = FALSE,
+    size = 3,
+    fontface = "bold",
+    nudge_y = 0.6
+  ) +
+  ggplot2::scale_fill_viridis_c(
+    option = "C",
+    name = "log10(bin\ncount + 1)"
+  ) +
+  ggplot2::coord_equal() +
+  ggplot2::labs(
+    title = "Phase 7 Long Island Spatial Density Heatmap",
+    subtitle = "Heat intensity shows accident concentration; numbered markers show hotspot centroids",
+    x = "Projected x (km)",
+    y = "Projected y (km)"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold"),
+    panel.grid.minor = ggplot2::element_blank()
+  )
+
+print(spatial_density_heatmap)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase7_spatial_density_heatmap.png"),
+  plot = spatial_density_heatmap,
+  width = 8,
+  height = 5.5,
+  dpi = 300
+)
+```
+
+```{r phase-7-summary}
+phase_7_summary <- data.table(
+  checkpoint = c(
+    "kNN distance plot saved",
+    "eps trials saved",
+    "DBSCAN solution created",
+    "Corridor assignments saved",
+    "Spatial hotspot map saved",
+    "Spatial density heatmap saved"
+  ),
+  status = c(
+    file.exists(file.path(output_dir, "phase7_knn_distance_plot.png")),
+    file.exists(file.path(output_dir, "phase7_eps_trials.csv")),
+    exists("db_result"),
+    file.exists(file.path(output_dir, "phase7_corridor_assignments.csv")),
+    file.exists(file.path(output_dir, "phase7_spatial_hotspot_map.png")),
+    file.exists(file.path(output_dir, "phase7_spatial_density_heatmap.png"))
+  )
+)
+
+fwrite(phase_7_summary, file.path(output_dir, "phase7_summary.csv"))
+
+knitr::kable(phase_7_summary, caption = "Phase 7 readiness summary")
+```
+
+# Phase 8: Post-Clustering Interpretation
+
+This phase joins the scenario and spatial cluster labels back to the working data and builds the interpretation tables used for the final report.
+
+```{r phase-8-label-joining}
+kp_final <- selected_model
+db_final <- db_result
+
+if (length(kp_final$cluster) != nrow(df_phase3)) {
+  stop("Scenario cluster labels do not match the Phase 3 data rows.")
+}
+
+if (length(db_final$cluster) != nrow(df_phase3)) {
+  stop("Spatial cluster labels do not match the Phase 3 data rows.")
+}
+
+df_clustered <- copy(df_phase3)
+df_clustered[, scenario_cluster := as.integer(kp_final$cluster)]
+df_clustered[, spatial_cluster := as.integer(db_final$cluster)]
+
+label_join_check <- data.table(
+  metric = c(
+    "Rows in clustered data",
+    "Scenario labels",
+    "Spatial labels",
+    "Scenario label NAs",
+    "Spatial label NAs"
+  ),
+  value = c(
+    nrow(df_clustered),
+    length(kp_final$cluster),
+    length(db_final$cluster),
+    sum(is.na(df_clustered$scenario_cluster)),
+    sum(is.na(df_clustered$spatial_cluster))
+  )
+)
+
+if (any(label_join_check[metric %in% c("Scenario label NAs", "Spatial label NAs"), value > 0])) {
+  stop("Phase 8 label joining produced missing cluster labels.")
+}
+
+fwrite(label_join_check, file.path(output_dir, "phase8_label_join_check.csv"))
+
+knitr::kable(label_join_check, caption = "Phase 8 label join check")
+```
+
+```{r phase-8-severity-profile}
+dataset_sev4_pct <- round(100 * mean(as.integer(df_clustered$Severity) == 4), 2)
+dataset_sev34_pct <- round(100 * mean(as.integer(df_clustered$Severity) %in% c(3, 4)), 2)
+
+scenario_severity_profile <- df_clustered[, .(
+  n = .N,
+  sev1_pct = round(100 * mean(as.integer(Severity) == 1), 2),
+  sev2_pct = round(100 * mean(as.integer(Severity) == 2), 2),
+  sev3_pct = round(100 * mean(as.integer(Severity) == 3), 2),
+  sev4_pct = round(100 * mean(as.integer(Severity) == 4), 2),
+  sev34_pct = round(100 * mean(as.integer(Severity) %in% c(3, 4)), 2)
+), by = scenario_cluster][order(scenario_cluster)]
+
+scenario_severity_profile[, high_risk_archetype := (
+  sev4_pct >= (1.5 * dataset_sev4_pct) |
+    sev34_pct == max(sev34_pct)
+)]
+
+fwrite(scenario_severity_profile, file.path(output_dir, "phase8_scenario_severity_profile.csv"))
+
+knitr::kable(scenario_severity_profile, caption = "Phase 8 severity profile by scenario cluster")
+```
+
+```{r phase-8-county-profile}
+scenario_county_profile <- df_clustered[, .(
+  n = .N,
+  Nassau_pct = round(100 * mean(County == "Nassau"), 2),
+  Suffolk_pct = round(100 * mean(County == "Suffolk"), 2),
+  Queens_pct = round(100 * mean(County == "Queens"), 2),
+  dominant_county = mode_value(County)
+), by = scenario_cluster][order(scenario_cluster)]
+
+fwrite(scenario_county_profile, file.path(output_dir, "phase8_scenario_county_profile.csv"))
+
+knitr::kable(scenario_county_profile, caption = "Phase 8 county composition by scenario cluster")
+```
+
+```{r phase-8-weather-time-profile}
+scenario_weather_time_profile <- df_clustered[, .(
+  n = .N,
+  dominant_weather_group = mode_value(weather_group),
+  dominant_weather_share = round(100 * dominant_share(weather_group), 2),
+  dominant_hour_band = mode_value(hour_band),
+  dominant_hour_share = round(100 * dominant_share(hour_band), 2),
+  night_pct = round(100 * mean(Sunrise_Sunset == "Night"), 2),
+  weekend_pct = round(100 * mean(weekend), 2),
+  mean_temperature = round(mean(`Temperature(F)`), 2),
+  mean_visibility = round(mean(`Visibility(mi)`), 2),
+  mean_wind_speed = round(mean(`Wind_Speed(mph)`), 2),
+  junction_pct = round(100 * mean(Junction == "TRUE"), 2),
+  traffic_signal_pct = round(100 * mean(Traffic_Signal == "TRUE"), 2),
+  crossing_pct = round(100 * mean(Crossing == "TRUE"), 2),
+  stop_pct = round(100 * mean(Stop == "TRUE"), 2)
+), by = scenario_cluster][order(scenario_cluster)]
+
+fwrite(scenario_weather_time_profile, file.path(output_dir, "phase8_scenario_weather_time_profile.csv"))
+
+knitr::kable(scenario_weather_time_profile, caption = "Phase 8 weather and time profile by scenario cluster")
+```
+
+```{r phase-8-spatial-scenario-crosstab}
+scenario_name_lookup <- copy(cluster_profile_summary)[
+  , .(
+    scenario_cluster = as.integer(as.character(cluster)),
+    working_name
+  )
+]
+
+spatial_scenario_crosstab <- df_clustered[spatial_cluster > 0, .N, by = .(spatial_cluster, scenario_cluster)][
+  order(spatial_cluster, -N, scenario_cluster)
+][
+  , spatial_cluster_pct := round(100 * N / sum(N), 2), by = spatial_cluster
+]
+
+spatial_scenario_crosstab <- merge(
+  spatial_scenario_crosstab,
+  non_noise_assignments[, .(spatial_cluster, corridor_label)],
+  by = "spatial_cluster",
+  all.x = TRUE
+)
+
+spatial_scenario_crosstab <- merge(
+  spatial_scenario_crosstab,
+  scenario_name_lookup,
+  by = "scenario_cluster",
+  all.x = TRUE
+)
+
+spatial_scenario_dominance <- spatial_scenario_crosstab[
+  order(spatial_cluster, -N, scenario_cluster)
+][
+  , .SD[1], by = spatial_cluster
+][
+  , .(
+    spatial_cluster,
+    corridor_label,
+    dominant_scenario_cluster = scenario_cluster,
+    dominant_scenario_name = working_name,
+    dominant_count = N,
+    dominant_pct = spatial_cluster_pct
+  )
+]
+
+fwrite(spatial_scenario_crosstab, file.path(output_dir, "phase8_spatial_scenario_crosstab.csv"))
+fwrite(spatial_scenario_dominance, file.path(output_dir, "phase8_spatial_scenario_dominance.csv"))
+
+knitr::kable(spatial_scenario_crosstab, caption = "Phase 8 spatial-scenario cross-tabulation")
+knitr::kable(spatial_scenario_dominance, caption = "Phase 8 dominant scenario by spatial hotspot")
+```
+
+```{r phase-8-final-naming}
+scenario_final_names <- merge(
+  scenario_weather_time_profile,
+  scenario_severity_profile[, .(scenario_cluster, sev4_pct, high_risk_archetype)],
+  by = "scenario_cluster",
+  all.x = TRUE
+)
+
+scenario_final_names <- merge(
+  scenario_final_names,
+  scenario_name_lookup,
+  by = "scenario_cluster",
+  all.x = TRUE
+)
+
+scenario_final_names[, final_name := dplyr::case_when(
+  dominant_weather_group == "Snow_Ice" ~ "Winter Adverse --- Snow and Ice",
+  night_pct >= 50 & dominant_weather_group %in% c("Fog_Haze", "Rain", "Thunderstorm") ~ "Night Low-Visibility --- Fog and Rain",
+  night_pct >= 50 & dominant_hour_band == "Early_AM" ~ paste(
+    "Night / Early AM ---",
+    gsub("_", " ", dominant_weather_group)
+  ),
+  weekend_pct >= 40 & traffic_signal_pct >= 8 ~ "Weekend Surface Road --- Signal Heavy",
+  dominant_hour_band %in% c("AM_Rush", "PM_Rush") & junction_pct >= 10 ~ paste(
+    gsub("_", " ", dominant_weather_group),
+    gsub("_", " ", dominant_hour_band),
+    "--- Junction Heavy"
+  ),
+  TRUE ~ paste(
+    "Scenario Cluster",
+    scenario_cluster,
+    "---",
+    gsub("_", " ", dominant_weather_group)
+  )
+)]
+
+scenario_final_names[, final_name := ifelse(
+  high_risk_archetype,
+  paste(final_name, "(High Risk)"),
+  final_name
+)]
+
+duplicate_scenario_names <- scenario_final_names[, .N, by = final_name][N > 1, final_name]
+if (length(duplicate_scenario_names) > 0) {
+  scenario_final_names[final_name %in% duplicate_scenario_names, final_name := paste0(final_name, " (S", scenario_cluster, ")")]
+}
+
+spatial_final_names <- rbind(
+  data.table(
+    spatial_cluster = 0L,
+    corridor_label = "Noise / Unassigned",
+    final_name = "Noise / Unassigned"
+  ),
+  non_noise_assignments[, .(
+    spatial_cluster,
+    corridor_label,
+    final_name = ifelse(
+      corridor_label == "Surface Road Cluster",
+      paste("Surface Road Cluster", spatial_cluster),
+      paste(corridor_label, "Cluster", spatial_cluster)
+    )
+  )]
+)
+
+scenario_name_map <- scenario_final_names$final_name
+names(scenario_name_map) <- scenario_final_names$scenario_cluster
+
+spatial_name_map <- spatial_final_names$final_name
+names(spatial_name_map) <- spatial_final_names$spatial_cluster
+
+df_clustered[, scenario_cluster_name := scenario_name_map[as.character(scenario_cluster)]]
+df_clustered[, spatial_cluster_name := spatial_name_map[as.character(spatial_cluster)]]
+
+if ("working_name" %in% names(spatial_scenario_crosstab)) {
+  spatial_scenario_crosstab[, working_name := NULL]
+}
+spatial_scenario_crosstab <- merge(
+  spatial_scenario_crosstab,
+  scenario_final_names[, .(scenario_cluster, final_name)],
+  by = "scenario_cluster",
+  all.x = TRUE
+)
+
+spatial_scenario_dominance <- merge(
+  spatial_scenario_dominance[, !c("dominant_scenario_name"), with = FALSE],
+  scenario_final_names[, .(scenario_cluster, final_name)],
+  by.x = "dominant_scenario_cluster",
+  by.y = "scenario_cluster",
+  all.x = TRUE
+)
+data.table::setnames(spatial_scenario_dominance, "final_name", "dominant_scenario_name")
+
+fwrite(spatial_scenario_crosstab, file.path(output_dir, "phase8_spatial_scenario_crosstab.csv"))
+fwrite(spatial_scenario_dominance, file.path(output_dir, "phase8_spatial_scenario_dominance.csv"))
+
+fwrite(scenario_final_names, file.path(output_dir, "phase8_scenario_final_names.csv"))
+fwrite(spatial_final_names, file.path(output_dir, "phase8_spatial_final_names.csv"))
+
+knitr::kable(scenario_final_names, caption = "Phase 8 final scenario cluster names")
+knitr::kable(spatial_final_names, caption = "Phase 8 final spatial cluster names")
+```
+
+```{r phase-8-summary}
+phase_8_summary <- data.table(
+  checkpoint = c(
+    "Label join saved",
+    "Severity profile saved",
+    "County profile saved",
+    "Weather-time profile saved",
+    "Spatial-scenario cross-tab saved",
+    "Final cluster names saved",
+    "Scenario names are unique"
+  ),
+  status = c(
+    file.exists(file.path(output_dir, "phase8_label_join_check.csv")),
+    file.exists(file.path(output_dir, "phase8_scenario_severity_profile.csv")),
+    file.exists(file.path(output_dir, "phase8_scenario_county_profile.csv")),
+    file.exists(file.path(output_dir, "phase8_scenario_weather_time_profile.csv")),
+    file.exists(file.path(output_dir, "phase8_spatial_scenario_crosstab.csv")),
+    file.exists(file.path(output_dir, "phase8_scenario_final_names.csv")) &
+      file.exists(file.path(output_dir, "phase8_spatial_final_names.csv")),
+    uniqueN(scenario_final_names$final_name) == nrow(scenario_final_names)
+  )
+)
+
+fwrite(phase_8_summary, file.path(output_dir, "phase8_summary.csv"))
+
+knitr::kable(phase_8_summary, caption = "Phase 8 readiness summary")
+```
+
+# Phase 9: Export and Visualization
+
+This phase organizes the report-ready figures, tables, and labeled dataset export so the final write-up can pull from a single output location.
+
+```{r phase-9-export-setup}
+figure_dir <- file.path(output_dir, "figures")
+table_dir <- file.path(output_dir, "tables")
+interactive_dir <- file.path(output_dir, "interactive")
+
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(interactive_dir, recursive = TRUE, showWarnings = FALSE)
+
+export_setup <- data.table(
+  item = c("Figure directory", "Table directory", "Interactive directory"),
+  path = c(figure_dir, table_dir, interactive_dir),
+  status = c(
+    "Created",
+    "Created",
+    ifelse(interactive_exports_enabled, "Created", "Created for optional HTML exports")
+  )
+)
+
+knitr::kable(export_setup, caption = "Phase 9 export folders")
+```
+
+```{r phase-9-validation-plot, fig.height=4.5, fig.width=7}
+selected_validation_point <- validation_table[k == selected_k]
+validation_subtitle <- if (phase6_validation_mode == "consensus_sampled") {
+  paste(
+    "Consensus silhouette validation across",
+    phase6_validation_repeats,
+    "repeats of",
+    validation_rows,
+    "rows"
+  )
+} else if (phase6_validation_mode == "sampled") {
+  paste("Sampled silhouette validation on", validation_rows, "rows")
+} else {
+  "Full-data silhouette validation"
+}
+
+validation_plot <- ggplot2::ggplot(
+  validation_table,
+  ggplot2::aes(x = k, y = silhouette)
+) +
+  ggplot2::geom_line(color = "#1f78b4", linewidth = 0.9) +
+  ggplot2::geom_point(color = "#1f78b4", size = 2.6) +
+  ggplot2::geom_vline(xintercept = selected_k, linetype = "dashed", color = "#33a02c", linewidth = 0.8) +
+  ggplot2::geom_point(
+    data = selected_validation_point,
+    color = "#33a02c",
+    size = 4
+  ) +
+  ggplot2::geom_text(
+    ggplot2::aes(label = k),
+    nudge_y = max(validation_table$silhouette) * 0.025,
+    size = 3.5
+  ) +
+  ggplot2::annotate(
+    "label",
+    x = selected_k,
+    y = selected_validation_point$silhouette[[1]],
+    label = paste("Selected k =", selected_k),
+    fill = "#e5f5e0",
+    color = "#006d2c",
+    label.size = 0.25,
+    alpha = 0.95
+  ) +
+  ggplot2::labs(
+    title = paste("Phase 9 Validation Plot (", phase6_validation_mode, ")", sep = ""),
+    subtitle = validation_subtitle,
+    x = "Number of clusters (k)",
+    y = "Silhouette score"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold"),
+    panel.grid.minor = ggplot2::element_blank()
+  )
+
+print(validation_plot)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase9_validation_index_plot.png"),
+  plot = validation_plot,
+  width = 7,
+  height = 4.5,
+  dpi = 300
+)
+```
+
+```{r phase-9-stability-plot, fig.height=4.5, fig.width=7}
+stability_plot_data <- data.table::melt(
+  copy(stability_summary),
+  id.vars = "k",
+  measure.vars = c("rand", "jaccard"),
+  variable.name = "metric",
+  value.name = "score"
+)
+
+stability_plot <- ggplot2::ggplot(
+  stability_plot_data,
+  ggplot2::aes(x = factor(k), y = score, fill = metric)
+) +
+  ggplot2::annotate("rect", xmin = -Inf, xmax = Inf, ymin = 0.75, ymax = 1.05, alpha = 0.08, fill = "#31a354") +
+  ggplot2::annotate("rect", xmin = -Inf, xmax = Inf, ymin = 0.60, ymax = 0.75, alpha = 0.08, fill = "#fec44f") +
+  ggplot2::annotate("rect", xmin = -Inf, xmax = Inf, ymin = 0.00, ymax = 0.60, alpha = 0.06, fill = "#fb6a4a") +
+  ggplot2::geom_col(position = "dodge") +
+  ggplot2::geom_text(
+    ggplot2::aes(label = round(score, 2)),
+    position = ggplot2::position_dodge(width = 0.9),
+    vjust = -0.35,
+    size = 3.2
+  ) +
+  ggplot2::geom_hline(yintercept = 0.6, linetype = "dashed", color = "#e31a1c") +
+  ggplot2::geom_hline(yintercept = 0.75, linetype = "dotted", color = "#238b45") +
+  ggplot2::labs(
+    title = "Phase 9 Stability Summary",
+    subtitle = if (phase6_stability_mode == "consensus_sampled") {
+      paste(
+        "Green = strong, yellow = acceptable, red = weak;",
+        phase6_stability_repeats,
+        "repeats with",
+        phase6_stability_bootstraps,
+        "bootstraps each"
+      )
+    } else {
+      "Green band = strong stability, yellow = acceptable, red = weak"
+    },
+    x = "k",
+    y = "Score",
+    fill = "Metric"
+  ) +
+  ggplot2::coord_cartesian(ylim = c(0, 1.02)) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold"),
+    panel.grid.minor = ggplot2::element_blank()
+  )
+
+print(stability_plot)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase9_stability_plot.png"),
+  plot = stability_plot,
+  width = 7,
+  height = 4.5,
+  dpi = 300
+)
+```
+
+```{r phase-9-spatial-scenario-heatmap, fig.height=5.5, fig.width=8}
+heatmap_data <- merge(
+  spatial_scenario_crosstab,
+  scenario_final_names[, .(scenario_cluster, scenario_name_short = wrap_label(final_name, width = 18))],
+  by = "scenario_cluster",
+  all.x = TRUE
+)
+
+heatmap_data <- merge(
+  heatmap_data,
+  spatial_final_names[, .(spatial_cluster, spatial_name_short = wrap_label(final_name, width = 20))],
+  by = "spatial_cluster",
+  all.x = TRUE
+)
+
+heatmap_plot <- ggplot2::ggplot(
+  heatmap_data,
+  ggplot2::aes(
+    x = factor(scenario_cluster),
+    y = factor(spatial_cluster),
+    fill = spatial_cluster_pct
+  )
+) +
+  ggplot2::geom_tile(color = "white") +
+  ggplot2::geom_text(ggplot2::aes(label = round(spatial_cluster_pct, 1)), size = 3) +
+  ggplot2::scale_fill_gradient(low = "#deebf7", high = "#08519c") +
+  ggplot2::labs(
+    title = "Phase 9 Spatial-Scenario Cross-Tab Heatmap",
+    x = "Scenario cluster",
+    y = "Spatial cluster",
+    fill = "% within\nspatial cluster"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold"),
+    panel.grid = ggplot2::element_blank()
+  )
+
+print(heatmap_plot)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase9_spatial_scenario_heatmap.png"),
+  plot = heatmap_plot,
+  width = 8,
+  height = 5.5,
+  dpi = 300
+)
+```
+
+```{r phase-9-spatial-cluster-facets, fig.height=7, fig.width=9}
+top_spatial_clusters <- non_noise_assignments[order(-cluster_size)][1:min(.N, 6), spatial_cluster]
+
+spatial_cluster_heatmap_data <- merge(
+  df_spatial_plot[spatial_cluster %in% top_spatial_clusters],
+  spatial_final_names[, .(spatial_cluster, final_name)],
+  by = "spatial_cluster",
+  all.x = TRUE
+)
+
+spatial_cluster_heatmap_data[, final_name_short := wrap_label(final_name, width = 26)]
+
+spatial_cluster_facet_heatmap <- ggplot2::ggplot(
+  spatial_cluster_heatmap_data,
+  ggplot2::aes(
+    x = x_km,
+    y = y_km,
+    fill = after_stat(log10(count + 1))
+  )
+) +
+  ggplot2::geom_bin2d(bins = 50) +
+  ggplot2::scale_fill_viridis_c(
+    option = "D",
+    name = "log10(bin\ncount + 1)"
+  ) +
+  ggplot2::coord_equal() +
+  ggplot2::facet_wrap(~ final_name_short, ncol = 2) +
+  ggplot2::labs(
+    title = "Phase 9 Spatial Cluster Heatmaps",
+    subtitle = "Each panel shows the internal density shape of one of the largest hotspot clusters",
+    x = "Projected x (km)",
+    y = "Projected y (km)"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold"),
+    panel.grid.minor = ggplot2::element_blank(),
+    strip.text = ggplot2::element_text(face = "bold")
+  )
+
+print(spatial_cluster_facet_heatmap)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase9_spatial_cluster_facets_heatmap.png"),
+  plot = spatial_cluster_facet_heatmap,
+  width = 9,
+  height = 7,
+  dpi = 300
+)
+```
+
+```{r phase-9-scenario-risk-bubble, fig.height=5, fig.width=7.5}
+dataset_sev34_pct <- round(100 * mean(as.integer(df_clustered$Severity) %in% c(3, 4)), 2)
+
+risk_bubble_data <- merge(
+  scenario_severity_profile,
+  scenario_weather_time_profile[, .(
+    scenario_cluster,
+    dominant_weather_group,
+    dominant_hour_band,
+    mean_visibility
+  )],
+  by = "scenario_cluster",
+  all.x = TRUE
+)
+
+risk_bubble_data <- merge(
+  risk_bubble_data,
+  scenario_final_names[, .(scenario_cluster, final_name)],
+  by = "scenario_cluster",
+  all.x = TRUE
+)
+
+risk_bubble_data[, short_label := paste0("S", scenario_cluster)]
+
+risk_bubble_plot <- ggplot2::ggplot(
+  risk_bubble_data,
+  ggplot2::aes(
+    x = n,
+    y = sev34_pct,
+    size = pmax(sev4_pct, 0.1),
+    color = dominant_weather_group
+  )
+) +
+  ggplot2::geom_hline(yintercept = dataset_sev34_pct, linetype = "dashed", color = "#e31a1c") +
+  ggplot2::geom_point(alpha = 0.85) +
+  ggplot2::geom_text(ggplot2::aes(label = short_label), vjust = -0.8, size = 3.4, show.legend = FALSE) +
+  ggplot2::labs(
+    title = "Phase 9 Scenario Risk and Size View",
+    subtitle = "Bubble size reflects Severity 4 share; dashed line marks overall Severity 3/4 rate",
+    x = "Cluster size",
+    y = "Severity 3/4 share (%)",
+    size = "Severity 4\nshare (%)",
+    color = "Weather group"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold"),
+    panel.grid.minor = ggplot2::element_blank()
+  )
+
+print(risk_bubble_plot)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase9_scenario_risk_bubble.png"),
+  plot = risk_bubble_plot,
+  width = 7.5,
+  height = 5,
+  dpi = 300
+)
+```
+
+```{r phase-9-county-composition, fig.height=4.8, fig.width=7.5}
+county_plot_data <- data.table::melt(
+  copy(scenario_county_profile),
+  id.vars = c("scenario_cluster", "n", "dominant_county"),
+  measure.vars = c("Nassau_pct", "Suffolk_pct", "Queens_pct"),
+  variable.name = "county",
+  value.name = "pct"
+)
+
+county_plot_data[, county := factor(
+  county,
+  levels = c("Nassau_pct", "Suffolk_pct", "Queens_pct"),
+  labels = c("Nassau", "Suffolk", "Queens")
+)]
+
+county_plot <- ggplot2::ggplot(
+  county_plot_data,
+  ggplot2::aes(x = factor(scenario_cluster), y = pct, fill = county)
+) +
+  ggplot2::geom_col(width = 0.75) +
+  ggplot2::labs(
+    title = "Phase 9 County Composition by Scenario Cluster",
+    subtitle = "Each bar sums to 100% within a scenario cluster",
+    x = "Scenario cluster",
+    y = "Share (%)",
+    fill = "County"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold"),
+    panel.grid.minor = ggplot2::element_blank()
+  )
+
+print(county_plot)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase9_county_composition.png"),
+  plot = county_plot,
+  width = 7.5,
+  height = 4.8,
+  dpi = 300
+)
+```
+
+```{r phase-9-cluster-fingerprint, fig.height=5.8, fig.width=8}
+fingerprint_source <- merge(
+  scenario_weather_time_profile[, .(
+    scenario_cluster,
+    night_pct,
+    weekend_pct,
+    junction_pct,
+    traffic_signal_pct,
+    crossing_pct,
+    mean_visibility,
+    mean_temperature,
+    mean_wind_speed
+  )],
+  scenario_severity_profile[, .(scenario_cluster, sev34_pct)],
+  by = "scenario_cluster",
+  all.x = TRUE
+)
+
+fingerprint_long <- data.table::melt(
+  fingerprint_source,
+  id.vars = "scenario_cluster",
+  variable.name = "metric",
+  value.name = "metric_value"
+)
+
+metric_labels <- c(
+  night_pct = "Night share",
+  weekend_pct = "Weekend share",
+  junction_pct = "Junction share",
+  traffic_signal_pct = "Traffic signal share",
+  crossing_pct = "Crossing share",
+  mean_visibility = "Mean visibility",
+  mean_temperature = "Mean temperature",
+  mean_wind_speed = "Mean wind speed",
+  sev34_pct = "Severity 3/4 share"
+)
+
+fingerprint_long[, metric_label := factor(
+  metric_labels[metric],
+  levels = rev(metric_labels)
+)]
+fingerprint_long[, scaled_value := rescale01(metric_value), by = metric]
+
+fingerprint_plot <- ggplot2::ggplot(
+  fingerprint_long,
+  ggplot2::aes(x = factor(scenario_cluster), y = metric_label, fill = scaled_value)
+) +
+  ggplot2::geom_tile(color = "white") +
+  ggplot2::geom_text(ggplot2::aes(label = round(metric_value, 1)), size = 3) +
+  ggplot2::scale_fill_gradient(low = "#f7fbff", high = "#08306b") +
+  ggplot2::labs(
+    title = "Phase 9 Scenario Cluster Fingerprint",
+    subtitle = "Tile color is scaled within each metric; labels show actual values",
+    x = "Scenario cluster",
+    y = NULL,
+    fill = "Relative\nstrength"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold"),
+    panel.grid = ggplot2::element_blank()
+  )
+
+print(fingerprint_plot)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase9_cluster_fingerprint_heatmap.png"),
+  plot = fingerprint_plot,
+  width = 8,
+  height = 5.8,
+  dpi = 300
+)
+```
+
+```{r phase-9-export-artifacts}
+write.csv(
+  df_clustered,
+  file.path(output_dir, "li_accidents_clustered.csv"),
+  row.names = FALSE
+)
+
+table_exports <- list(
+  phase6_validation_indices = validation_table,
+  phase6_validation_metadata = validation_metadata,
+  phase6_stability_summary = stability_summary,
+  phase6_selection_summary = selection_summary,
+  phase7_eps_trials = eps_trials,
+  phase7_parameter_summary = parameter_summary,
+  phase7_dbscan_cluster_sizes = spatial_cluster_sizes,
+  phase7_corridor_assignments = non_noise_assignments,
+  phase8_severity_profile = scenario_severity_profile,
+  phase8_county_profile = scenario_county_profile,
+  phase8_weather_time_profile = scenario_weather_time_profile,
+  phase8_spatial_scenario_crosstab = spatial_scenario_crosstab,
+  phase8_spatial_scenario_dominance = spatial_scenario_dominance,
+  phase8_scenario_final_names = scenario_final_names,
+  phase8_spatial_final_names = spatial_final_names
+)
+
+if (!is.null(validation_repeat_results)) {
+  table_exports$phase6_validation_repeats <- validation_repeat_results
+}
+
+if (!is.null(stability_repeat_results)) {
+  table_exports$phase6_stability_repeats <- stability_repeat_results
+}
+
+invisible(lapply(names(table_exports), function(table_name) {
+  fwrite(table_exports[[table_name]], file.path(table_dir, paste0(table_name, ".csv")))
+}))
+
+figure_exports <- c(
+  "phase5_kproto_elbow_plot.png",
+  "phase6_cluster_profiles.pdf",
+  "phase7_knn_distance_plot.png",
+  "phase7_spatial_hotspot_map.png",
+  "phase7_spatial_density_heatmap.png",
+  "phase9_validation_index_plot.png",
+  "phase9_stability_plot.png",
+  "phase9_spatial_scenario_heatmap.png",
+  "phase9_spatial_cluster_facets_heatmap.png",
+  "phase9_scenario_risk_bubble.png",
+  "phase9_county_composition.png",
+  "phase9_cluster_fingerprint_heatmap.png"
+)
+
+invisible(lapply(figure_exports, function(file_name) {
+  source_path <- file.path(output_dir, file_name)
+  if (file.exists(source_path)) {
+    file.copy(source_path, file.path(figure_dir, file_name), overwrite = TRUE)
+  }
+}))
+
+file.copy(
+  file.path(output_dir, "li_accidents_clustered.csv"),
+  file.path(table_dir, "li_accidents_clustered.csv"),
+  overwrite = TRUE
+)
+
+export_manifest <- data.table(
+  artifact_type = c(
+    rep("figure", length(figure_exports)),
+    rep("table", length(table_exports)),
+    "table"
+  ),
+  artifact_name = c(
+    figure_exports,
+    paste0(names(table_exports), ".csv"),
+    "li_accidents_clustered.csv"
+  ),
+  target_path = c(
+    file.path(figure_dir, figure_exports),
+    file.path(table_dir, paste0(names(table_exports), ".csv")),
+    file.path(table_dir, "li_accidents_clustered.csv")
+  )
+)
+
+fwrite(export_manifest, file.path(output_dir, "phase9_export_manifest.csv"))
+
+knitr::kable(export_manifest, caption = "Phase 9 export manifest")
+```
+
+```{r phase-9-interactive-exports}
+interactive_exports <- data.table(
+  artifact_name = c(
+    "phase9_validation_index_interactive.html",
+    "phase9_stability_interactive.html",
+    "phase9_spatial_hotspot_interactive.html",
+    "phase9_spatial_density_interactive.html",
+    "phase9_scenario_risk_interactive.html",
+    "phase9_county_composition_interactive.html",
+    "phase9_cluster_fingerprint_interactive.html",
+    "phase9_spatial_scenario_heatmap_interactive.html"
+  ),
+  target_path = file.path(
+    interactive_dir,
+    c(
+      "phase9_validation_index_interactive.html",
+      "phase9_stability_interactive.html",
+      "phase9_spatial_hotspot_interactive.html",
+      "phase9_spatial_density_interactive.html",
+      "phase9_scenario_risk_interactive.html",
+      "phase9_county_composition_interactive.html",
+      "phase9_cluster_fingerprint_interactive.html",
+      "phase9_spatial_scenario_heatmap_interactive.html"
+    )
+  ),
+  saved = FALSE,
+  note = ifelse(
+    interactive_exports_enabled,
+    "Saved as interactive HTML",
+    "Install plotly and htmlwidgets to enable interactive exports"
+  )
+)
+
+if (interactive_exports_enabled) {
+  spatial_interactive_data <- copy(df_spatial_plot)
+  if (nrow(spatial_interactive_data) > 15000) {
+    set.seed(42)
+    spatial_interactive_data <- spatial_interactive_data[
+      ,
+      .SD[sample(.N, size = min(.N, max(1L, ceiling(15000 * .N / nrow(df_spatial_plot)))))],
+      by = cluster_label
+    ]
+  }
+
+  spatial_map_interactive <- ggplot2::ggplot(
+    spatial_interactive_data,
+    ggplot2::aes(x = x_km, y = y_km, color = cluster_label,
+                 text = paste0(
+                   "Cluster: ", cluster_label,
+                   "<br>x_km: ", round(x_km, 2),
+                   "<br>y_km: ", round(y_km, 2)
+                 ))
+  ) +
+    ggplot2::geom_point(size = 0.6, alpha = 0.7) +
+    ggplot2::scale_color_manual(values = cluster_colors) +
+    ggplot2::labs(
+      title = "Interactive Spatial Hotspot View",
+      subtitle = "Rendered on a representative sample for smoother browsing",
+      x = "Projected x (km)",
+      y = "Projected y (km)",
+      color = "Cluster"
+    ) +
+    ggplot2::theme_minimal()
+
+  interactive_widgets <- list(
+    phase9_validation_index_interactive.html = plotly::ggplotly(validation_plot, tooltip = c("x", "y")),
+    phase9_stability_interactive.html = plotly::ggplotly(stability_plot, tooltip = c("x", "y", "fill")),
+    phase9_spatial_hotspot_interactive.html = plotly::ggplotly(spatial_map_interactive, tooltip = "text"),
+    phase9_spatial_density_interactive.html = plotly::plot_ly(
+      spatial_interactive_data,
+      x = ~x_km,
+      y = ~y_km,
+      type = "histogram2d",
+      colorscale = "Viridis",
+      nbinsx = 80,
+      nbinsy = 60
+    ) |>
+      plotly::layout(
+        title = "Interactive Spatial Density Heatmap",
+        xaxis = list(title = "Projected x (km)"),
+        yaxis = list(title = "Projected y (km)")
+      ),
+    phase9_scenario_risk_interactive.html = plotly::ggplotly(risk_bubble_plot, tooltip = c("x", "y", "size", "colour")),
+    phase9_county_composition_interactive.html = plotly::ggplotly(county_plot, tooltip = c("x", "y", "fill")),
+    phase9_cluster_fingerprint_interactive.html = plotly::ggplotly(fingerprint_plot, tooltip = c("x", "y", "fill")),
+    phase9_spatial_scenario_heatmap_interactive.html = plotly::ggplotly(heatmap_plot, tooltip = c("x", "y", "fill"))
+  )
+
+  invisible(lapply(names(interactive_widgets), function(file_name) {
+    htmlwidgets::saveWidget(
+      interactive_widgets[[file_name]],
+      file = file.path(interactive_dir, file_name),
+      selfcontained = FALSE
+    )
+  }))
+
+  interactive_exports[, saved := file.exists(target_path)]
+}
+
+fwrite(interactive_exports, file.path(output_dir, "phase9_interactive_manifest.csv"))
+
+knitr::kable(interactive_exports, caption = "Phase 9 interactive export manifest")
+```
+
+```{r phase-9-summary}
+phase_9_summary <- data.table(
+  checkpoint = c(
+    "Figure directory created",
+    "Table directory created",
+    "Validation plot saved",
+    "Stability plot saved",
+    "Heatmap saved",
+    "Spatial density heatmap saved",
+    "Spatial cluster facet heatmap saved",
+    "Scenario risk bubble saved",
+    "County composition plot saved",
+    "Cluster fingerprint heatmap saved",
+    "Labeled CSV exported",
+    "Interactive manifest saved",
+    "Export manifest saved"
+  ),
+  status = c(
+    dir.exists(figure_dir),
+    dir.exists(table_dir),
+    file.exists(file.path(figure_dir, "phase9_validation_index_plot.png")),
+    file.exists(file.path(figure_dir, "phase9_stability_plot.png")),
+    file.exists(file.path(figure_dir, "phase9_spatial_scenario_heatmap.png")),
+    file.exists(file.path(figure_dir, "phase7_spatial_density_heatmap.png")),
+    file.exists(file.path(figure_dir, "phase9_spatial_cluster_facets_heatmap.png")),
+    file.exists(file.path(figure_dir, "phase9_scenario_risk_bubble.png")),
+    file.exists(file.path(figure_dir, "phase9_county_composition.png")),
+    file.exists(file.path(figure_dir, "phase9_cluster_fingerprint_heatmap.png")),
+    file.exists(file.path(table_dir, "li_accidents_clustered.csv")),
+    file.exists(file.path(output_dir, "phase9_interactive_manifest.csv")),
+    file.exists(file.path(output_dir, "phase9_export_manifest.csv"))
+  )
+)
+
+fwrite(phase_9_summary, file.path(output_dir, "phase9_summary.csv"))
+
+knitr::kable(phase_9_summary, caption = "Phase 9 readiness summary")
+```
+
+# Phase 10: Final Report and Submission Checklist
+
+This phase keeps a simple readiness tracker for the final report assets and submission handoff.
+
+```{r phase-10-readiness}
+phase_10_checklist <- data.table(
+  deliverable = c(
+    "Long Island SRS source",
+    "Execution plan source",
+    "Main workflow Rmd",
+    "Cleaned dataset",
+    "Clustered labeled dataset",
+    "Figure export folder",
+    "Table export folder",
+    "Interactive export manifest"
+  ),
+  path = c(
+    "Li_Clustering_SRS.tex",
+    "Li_Clustering_Execution_Plan.tex",
+    "li_clustering.Rmd",
+    input_path,
+    file.path(table_dir, "li_accidents_clustered.csv"),
+    figure_dir,
+    table_dir,
+    file.path(output_dir, "phase9_interactive_manifest.csv")
+  ),
+  ready = c(
+    file.exists("Li_Clustering_SRS.tex"),
+    file.exists("Li_Clustering_Execution_Plan.tex"),
+    file.exists("li_clustering.Rmd"),
+    file.exists(input_path),
+    file.exists(file.path(table_dir, "li_accidents_clustered.csv")),
+    dir.exists(figure_dir),
+    dir.exists(table_dir),
+    file.exists(file.path(output_dir, "phase9_interactive_manifest.csv"))
+  )
+)
+
+fwrite(phase_10_checklist, file.path(output_dir, "phase10_readiness_checklist.csv"))
+
+knitr::kable(phase_10_checklist, caption = "Phase 10 readiness checklist")
+```
+
+```{r phase-10-report-outline}
+phase_10_report_outline <- data.table(
+  report_section = c(
+    "Introduction and motivation",
+    "Dataset description and audit findings",
+    "Feature engineering decisions",
+    "Method selection rationale",
+    "Scenario clustering results",
+    "Spatial hotspot results",
+    "Interpretation and cross-tab findings",
+    "Limitations",
+    "Conclusion and safety priorities"
+  ),
+  main_source = c(
+    "Li_Clustering_SRS.tex",
+    file.path(table_dir, "phase8_severity_profile.csv"),
+    file.path(table_dir, "phase8_weather_time_profile.csv"),
+    "Li_Clustering_Execution_Plan.tex",
+    file.path(figure_dir, "phase9_validation_index_plot.png"),
+    file.path(figure_dir, "phase7_spatial_hotspot_map.png"),
+    file.path(table_dir, "phase8_spatial_scenario_crosstab.csv"),
+    file.path(output_dir, "phase10_limitations_table.csv"),
+    file.path(output_dir, "phase10_research_question_coverage.csv")
+  ),
+  ready = c(
+    file.exists("Li_Clustering_SRS.tex"),
+    file.exists(file.path(table_dir, "phase8_severity_profile.csv")),
+    file.exists(file.path(table_dir, "phase8_weather_time_profile.csv")),
+    file.exists("Li_Clustering_Execution_Plan.tex"),
+    file.exists(file.path(figure_dir, "phase9_validation_index_plot.png")),
+    file.exists(file.path(figure_dir, "phase7_spatial_hotspot_map.png")),
+    file.exists(file.path(table_dir, "phase8_spatial_scenario_crosstab.csv")),
+    TRUE,
+    TRUE
+  )
+)
+
+fwrite(phase_10_report_outline, file.path(output_dir, "phase10_report_outline.csv"))
+
+knitr::kable(phase_10_report_outline, caption = "Phase 10 report outline and source map")
+```
+
+```{r phase-10-limitations}
+phase_10_limitations <- data.table(
+  limitation = c(
+    "Duration capping",
+    "Precipitation exclusion",
+    "Distance exclusion",
+    "Severity 2 dominance",
+    "Sampled Phase 6 validation",
+    "DBSCAN parameter sensitivity"
+  ),
+  report_language = c(
+    "Duration was capped at the 99th percentile to reduce the effect of extreme outliers, so the top 1% of incidents lose some real variation.",
+    "Precipitation was excluded from the core model because missingness was high enough to make routine imputation less defensible.",
+    "Distance(mi) was excluded because the large share of zero values suggests a reporting artifact rather than a stable behavioral feature.",
+    "Severity 2 dominates the dataset, so subtle differences among severe crashes can be harder to separate.",
+    if (run_profile == "full_srs") {
+      "Phase 6 is configured for full-data validation and stability on a stronger machine, so this setting should only be used when memory is no longer the limiting factor."
+    } else if (run_profile == "consensus_16gb") {
+      paste(
+        "Phase 6 uses repeated sampled validation and repeated sampled stability checks",
+        "to build a consensus choice of k on a 16 GB machine;",
+        "the archived full-data version is still available for a later high-memory rerun."
+      )
+    } else {
+      "Phase 6 uses sampled silhouette validation and sampled stability checks on this machine to stay within local memory limits; the full-data version is archived for a later high-memory rerun."
+    },
+    "Spatial hotspot shapes can shift if eps or minPts changes, so corridor labels should be read as data-driven approximations."
+  ),
+  include_in_final_report = TRUE
+)
+
+fwrite(phase_10_limitations, file.path(output_dir, "phase10_limitations_table.csv"))
+
+knitr::kable(phase_10_limitations, caption = "Phase 10 limitations table")
+```
+
+```{r phase-10-research-question-coverage}
+phase_10_rq_coverage <- data.table(
+  research_focus = c(
+    "Scenario accident archetypes",
+    "Spatial hotspot corridors",
+    "High-risk severity patterns",
+    "County composition differences",
+    "Hotspot-to-scenario linkage"
+  ),
+  evidence_source = c(
+    file.path(table_dir, "phase8_scenario_final_names.csv"),
+    file.path(table_dir, "phase8_spatial_final_names.csv"),
+    file.path(table_dir, "phase8_severity_profile.csv"),
+    file.path(table_dir, "phase8_county_profile.csv"),
+    file.path(table_dir, "phase8_spatial_scenario_crosstab.csv")
+  ),
+  ready = c(
+    file.exists(file.path(table_dir, "phase8_scenario_final_names.csv")),
+    file.exists(file.path(table_dir, "phase8_spatial_final_names.csv")),
+    file.exists(file.path(table_dir, "phase8_severity_profile.csv")),
+    file.exists(file.path(table_dir, "phase8_county_profile.csv")),
+    file.exists(file.path(table_dir, "phase8_spatial_scenario_crosstab.csv"))
+  )
+)
+
+fwrite(phase_10_rq_coverage, file.path(output_dir, "phase10_research_question_coverage.csv"))
+
+knitr::kable(phase_10_rq_coverage, caption = "Phase 10 research-question coverage")
+```
+
+```{r phase-10-submission-manifest}
+phase_10_submission_manifest <- data.table(
+  deliverable_group = c(
+    "Core source",
+    "Core source",
+    "Core source",
+    "Data",
+    "Data",
+    "Exports",
+    "Exports",
+    "Exports"
+  ),
+  deliverable = c(
+    "Li_Clustering_SRS.tex",
+    "Li_Clustering_Execution_Plan.tex",
+    "li_clustering.Rmd",
+    "li_accidents_clean.csv",
+    "li_accidents_clustered.csv",
+    "Figure directory",
+    "Table directory",
+    "Phase 10 checklist bundle"
+  ),
+  path = c(
+    "Li_Clustering_SRS.tex",
+    "Li_Clustering_Execution_Plan.tex",
+    "li_clustering.Rmd",
+    input_path,
+    file.path(table_dir, "li_accidents_clustered.csv"),
+    figure_dir,
+    table_dir,
+    output_dir
+  ),
+  ready = c(
+    file.exists("Li_Clustering_SRS.tex"),
+    file.exists("Li_Clustering_Execution_Plan.tex"),
+    file.exists("li_clustering.Rmd"),
+    file.exists(input_path),
+    file.exists(file.path(table_dir, "li_accidents_clustered.csv")),
+    dir.exists(figure_dir),
+    dir.exists(table_dir),
+    dir.exists(output_dir)
+  )
+)
+
+fwrite(phase_10_submission_manifest, file.path(output_dir, "phase10_submission_manifest.csv"))
+
+knitr::kable(phase_10_submission_manifest, caption = "Phase 10 submission manifest")
+```
+
+```{r phase-10-summary}
+phase_10_summary <- data.table(
+  checkpoint = c(
+    "Readiness checklist saved",
+    "Report outline saved",
+    "Limitations table saved",
+    "Research-question coverage saved",
+    "Submission manifest saved"
+  ),
+  status = c(
+    file.exists(file.path(output_dir, "phase10_readiness_checklist.csv")),
+    file.exists(file.path(output_dir, "phase10_report_outline.csv")),
+    file.exists(file.path(output_dir, "phase10_limitations_table.csv")),
+    file.exists(file.path(output_dir, "phase10_research_question_coverage.csv")),
+    file.exists(file.path(output_dir, "phase10_submission_manifest.csv"))
+  )
+)
+
+fwrite(phase_10_summary, file.path(output_dir, "phase10_summary.csv"))
+
+knitr::kable(phase_10_summary, caption = "Phase 10 readiness summary")
+```
+
+```{r phase-10-sanity-audit}
+selected_jaccard_value <- suppressWarnings(as.numeric(selected_jaccard))
+
+phase_10_sanity_audit <- data.table(
+  check = c(
+    "Scenario names are unique",
+    "Scenario labels have no gaps",
+    "Spatial labels have no gaps",
+    "Selected scenario stability is at least moderate",
+    "Largest spatial cluster stays below 60% of all rows",
+    "DBSCAN cluster-count target met",
+    "DBSCAN noise target met"
+  ),
+  status = c(
+    uniqueN(scenario_final_names$final_name) == nrow(scenario_final_names),
+    label_join_check[metric == "Scenario label NAs", value][[1]] == 0,
+    label_join_check[metric == "Spatial label NAs", value][[1]] == 0,
+    !is.na(selected_jaccard_value) && selected_jaccard_value >= 0.4,
+    largest_non_noise_share_pct <= phase7_max_cluster_share_cap,
+    uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]) >= 3 &
+      uniqueN(df_spatial_clusters$spatial_cluster[df_spatial_clusters$spatial_cluster > 0]) <= 15,
+    round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2) >= 5 &
+      round(100 * mean(df_spatial_clusters$spatial_cluster == 0), 2) <= 30
+  ),
+  note = c(
+    "Final scenario names should be distinct for presentation and discussion.",
+    "Every row should carry a scenario label after the join.",
+    "Every row should carry a spatial label after the join.",
+    "A Jaccard score below 0.4 should be presented as exploratory rather than settled.",
+    "This avoids one hotspot absorbing most of Long Island.",
+    "The SRS target is between 3 and 15 non-noise clusters.",
+    "The SRS target is between 5% and 30% noise."
+  )
+)
+
+fwrite(phase_10_sanity_audit, file.path(output_dir, "phase10_sanity_audit.csv"))
+
+phase_10_summary <- rbind(
+  phase_10_summary,
+  data.table(
+    checkpoint = "Sanity audit saved",
+    status = file.exists(file.path(output_dir, "phase10_sanity_audit.csv"))
+  )
+)
+fwrite(phase_10_summary, file.path(output_dir, "phase10_summary.csv"))
+
+knitr::kable(phase_10_sanity_audit, caption = "Phase 10 sanity audit")
+```
+
+# Notes for the next phases
+
+- Phase 2 should stay read-only and focus on profiling the cleaned dataset.
+- Phase 3 now derives the main engineered features needed for the scenario and spatial matrices.
+- Phase 4 now defines the actual scenario and spatial matrices for clustering.
+- Phase 5 now sets up the candidate k-prototypes runs and their core diagnostics.
+- Phase 6 now validates the candidate solutions, checks stability, and assigns a selected k.
+- Phase 7 now sets DBSCAN parameters, creates the spatial hotspot solution, and assigns corridor-style labels.
+- Phase 8 now joins cluster labels back to the working data and builds the interpretation tables.
+- Phase 9 now exports the report-ready figures, tables, and labeled dataset.
+- Phase 10 now tracks final report and submission readiness.
+- `run_profile = "consensus_16gb"` is the current default in this file.
+- `run_profile = "local_safe"` is the quickest laptop-friendly option.
+- `run_profile = "consensus_16gb"` repeats sampled Phase 6 checks and aggregates them into a consensus choice for 16 GB machines.
+- `run_profile = "full_srs"` is reserved for a stronger machine that can support the full Phase 6 diagnostics.
+- The current default uses repeated sampled validation and repeated sampled stability checks to stay within 16 GB memory limits.
+- Interactive HTML exports are optional and now turn on automatically when the needed packages are available.
+- The original full-data Phase 6 validation and stability calls are archived in `eval=FALSE` chunks for later reruns.
+- Phase 3 and later should write tables, figures, and exports into `local_artifacts/output/`.
+- No `.RData` workspace files are needed for this workflow.
+
+```{r session-info}
+sessionInfo()
+```
