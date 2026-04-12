@@ -1996,7 +1996,7 @@ li_coords <- sf::st_coordinates(sf::st_cast(sf::st_geometry(li_counties), "MULTI
 li_border <- data.table(
   x_km = (li_coords[, "X"] - lng0) * 111.32 * cos(lat0 * pi / 180),
   y_km = (li_coords[, "Y"] - lat0) * 110.574,
-  group = paste0("border_", li_coords[, "L2"], "_", li_coords[, "L3"])
+  group = paste0("border_", li_coords[, "L1"], "_", li_coords[, "L2"])
 )
 
 spatial_map <- ggplot2::ggplot() +
