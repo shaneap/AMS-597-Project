@@ -2026,7 +2026,7 @@ spatial_map <- ggplot2::ggplot() +
   ggplot2::scale_color_manual(values = cluster_colors) +
   ggplot2::coord_equal() +
   ggplot2::labs(
-    title = "Phase 7 DBSCAN Spatial Hotspots — Long Island",
+    title = "Phase 7 DBSCAN Spatial Hotspots - Long Island",
     subtitle = "Cluster points overlaid on Nassau and Suffolk County boundaries",
     x = "Projected x (km)",
     y = "Projected y (km)",
@@ -2497,6 +2497,12 @@ for (col_name in scenario_factor_cols) {
   shap_data[[col_name]] <- factor(as.character(shap_data[[col_name]]))
 }
 
+# Sanitize column names — ranger's formula interface rejects names with (), %, etc.
+old_names <- names(shap_data)
+new_names <- make.names(old_names, unique = TRUE)
+setnames(shap_data, old_names, new_names)
+shap_name_map <- setNames(old_names, new_names)  # for restoring labels later
+
 shap_data[, cluster_label := factor(
   paste0("C", kp_final$cluster),
   levels = paste0("C", sort(unique(kp_final$cluster)))
@@ -2532,6 +2538,12 @@ shap_global_importance <- data.table(
   feature = names(importance_scores),
   importance = as.numeric(importance_scores)
 )
+# Restore original column names for display
+shap_global_importance[, feature := ifelse(
+  feature %in% names(shap_name_map),
+  shap_name_map[feature],
+  feature
+)]
 shap_global_importance[, feature_clean := gsub("[\\(\\)%]", "", feature)]
 shap_global_importance[, rank := seq_len(.N)]
 
@@ -2666,6 +2678,13 @@ cluster_specific_importance <- rbindlist(lapply(
     )
   }
 ))
+
+# Restore original column names for display
+cluster_specific_importance[, feature := ifelse(
+  feature %in% names(shap_name_map),
+  shap_name_map[feature],
+  feature
+)]
 
 # Identify top 8 features per cluster
 cluster_top_features <- cluster_specific_importance[
