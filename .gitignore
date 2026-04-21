@@ -17,5 +17,12 @@ data/US_Accidents_March23.csv
 Longisland_Clustering/output/
 !Longisland_Clustering/output/.gitkeep
 
+# Results (generated outputs, figures, CSVs, etc.)
+results/
+**/results/
+*.results
+output/
+**/output/
+
 # Archived PDFs (optional, uncomment to skip tracking old PDFs)
 # Longisland_Clustering/archive/*.pdf
