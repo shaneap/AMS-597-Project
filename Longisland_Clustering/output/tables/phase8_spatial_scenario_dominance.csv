@@ -1,0 +1,13 @@
+dominant_scenario_cluster,spatial_cluster,corridor_label,dominant_count,dominant_pct,dominant_scenario_name
+1,12,Meadowbrook / Wantagh Pkwy,50,32.26,Cloudy Off-Peak --- Midday
+2,1,Long Island Expressway (I-495),667,60.8,Cloudy AM Rush --- Junction Heavy
+2,2,Northern State Parkway,7557,51.54,Cloudy AM Rush --- Junction Heavy
+2,3,Southern State Parkway,5294,47.83,Cloudy AM Rush --- Junction Heavy
+2,4,Surface Road Cluster,70,46.67,Cloudy AM Rush --- Junction Heavy
+2,5,Surface Road Cluster,107,57.22,Cloudy AM Rush --- Junction Heavy
+2,6,Surface Road Cluster,131,54.81,Cloudy AM Rush --- Junction Heavy
+2,7,Northern State Parkway,78,59.09,Cloudy AM Rush --- Junction Heavy
+2,8,Meadowbrook / Wantagh Pkwy,59,59,Cloudy AM Rush --- Junction Heavy
+2,9,Northern State Parkway,57,43.85,Cloudy AM Rush --- Junction Heavy
+2,10,Surface Road Cluster,40,44.44,Cloudy AM Rush --- Junction Heavy
+2,11,Sunrise Highway,71,50.71,Cloudy AM Rush --- Junction Heavy

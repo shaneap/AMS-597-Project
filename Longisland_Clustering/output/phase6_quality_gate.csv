@@ -1,0 +1,3 @@
+metric,observed,threshold,pass,interpretation
+Silhouette width,0.4268,0.3,TRUE,Good cluster separation
+Bootstrap stability (ARI),0.997,0.4,TRUE,Stable clusters

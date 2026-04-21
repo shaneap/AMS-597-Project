@@ -1,0 +1,3 @@
+k,rand,jaccard,sd_rand,sd_jaccard,stability_repeats,stable_repeat_share,strong_repeat_share,stable_jaccard,strong_jaccard
+3,0.579531525914049,0.243005530911079,0.0117199076726776,0.00944391229166519,3,0,0,FALSE,FALSE
+7,0.769752374405635,0.173163857538164,0.0253630557782207,0.0167150299469706,3,0,0,FALSE,FALSE

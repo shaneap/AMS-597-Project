@@ -1,0 +1,11 @@
+metric,value
+kNN distance k,5
+DBSCAN minPts grid,"40, 50, 75, 100"
+DBSCAN eps grid,0.3 to 2
+Largest cluster share cap (%),60
+DBSCAN minPts,100
+Chosen eps (km),1
+Chosen non-noise clusters,12
+Chosen noise pct,15.22
+Chosen largest cluster share pct,44.32
+Selection reason,"Accepted trial balancing cluster count, noise level, and hotspot size concentration"

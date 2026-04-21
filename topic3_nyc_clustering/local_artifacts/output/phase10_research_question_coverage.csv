@@ -1,0 +1,6 @@
+research_focus,evidence_source,ready
+Scenario accident archetypes,local_artifacts/output/tables/phase8_scenario_final_names.csv,TRUE
+Spatial hotspot corridors,local_artifacts/output/tables/phase8_spatial_final_names.csv,TRUE
+High-risk severity patterns,local_artifacts/output/tables/phase8_severity_profile.csv,TRUE
+County composition differences,local_artifacts/output/tables/phase8_county_profile.csv,TRUE
+Hotspot-to-scenario linkage,local_artifacts/output/tables/phase8_spatial_scenario_crosstab.csv,TRUE

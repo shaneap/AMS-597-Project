@@ -1,0 +1,7 @@
+setting,value
+stability_mode,consensus_sampled
+stability_rows,2500
+full_rows,33228
+sample_fraction,0.0752
+bootstrap_reps,10
+stability_repeats,3

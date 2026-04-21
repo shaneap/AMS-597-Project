@@ -1,0 +1,11 @@
+finding,status
+Dimensions match the execution plan,Confirmed
+County counts match the Long Island scope,Confirmed
+Severity counts match the execution plan,Confirmed
+End_Lat and End_Lng remain heavily missing,Confirmed
+Precipitation and Wind_Chill remain too sparse for core clustering use,Confirmed
+Five binary roadway flags carry no signal,Confirmed
+Duration still shows extreme right-tail outliers,Confirmed
+Distance includes many zero values,Confirmed
+Wind direction labels need normalization,Confirmed
+Weather labels still need grouping before clustering,Confirmed

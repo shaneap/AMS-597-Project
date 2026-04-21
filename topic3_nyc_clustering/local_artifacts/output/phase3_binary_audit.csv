@@ -1,0 +1,14 @@
+flag,true_count,true_pct,decision
+Bump,0,0,Exclude: zero variance
+Roundabout,0,0,Exclude: zero variance
+Turning_Loop,0,0,Exclude: zero variance
+Traffic_Calming,4,0.012,Exclude: zero variance
+No_Exit,5,0.015,Exclude: zero variance
+Give_Way,304,0.9109,Exclude: near-zero variance
+Station,233,0.6981,Exclude: near-zero variance
+Railway,50,0.1498,Exclude: near-zero variance
+Amenity,112,0.3356,Exclude: near-zero variance
+Crossing,3374,10.1094,Retain for scenario matrix
+Junction,5332,15.976,Retain for scenario matrix
+Traffic_Signal,3186,9.5461,Retain for scenario matrix
+Stop,347,1.0397,Retain for scenario matrix

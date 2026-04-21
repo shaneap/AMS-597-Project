@@ -1,0 +1,9 @@
+metric,value
+Rows clustered,33228
+Noise pct,15.28
+Non-noise clusters,12
+Largest cluster size,14663
+Largest cluster share pct,44.13
+Meets SRS cluster-count target,1
+Meets SRS noise target,1
+Meets hotspot-balance target,1

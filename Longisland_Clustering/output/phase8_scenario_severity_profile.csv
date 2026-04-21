@@ -1,0 +1,5 @@
+scenario_cluster,n,sev1_pct,sev2_pct,sev3_pct,sev4_pct,sev34_pct,high_risk_archetype,sev4_rate,sev4_vs_baseline
+1,7220,0.17,86.69,10.25,2.89,13.14,FALSE,2.89,1.05
+2,16754,0.57,85.75,11.93,1.75,13.68,FALSE,1.75,0.63
+3,3730,0.59,85.25,12.09,2.06,14.16,FALSE,2.06,0.75
+4,5524,0.54,79.96,13.4,6.1,19.5,TRUE,6.1,2.21

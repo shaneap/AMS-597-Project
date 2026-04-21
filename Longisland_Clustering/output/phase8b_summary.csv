@@ -1,0 +1,7 @@
+checkpoint,status
+RF model trained,1
+Global importance saved,1
+Shapley feature effects saved,1
+Cluster-specific importance saved,1
+Classification accuracy saved,1
+RF OOB error,0.0053

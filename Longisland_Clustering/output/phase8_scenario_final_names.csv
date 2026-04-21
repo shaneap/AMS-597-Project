@@ -1,0 +1,5 @@
+scenario_cluster,n,dominant_weather_group,dominant_weather_share,dominant_hour_band,dominant_hour_share,night_pct,weekend_pct,mean_temperature,mean_visibility,mean_wind_speed,junction_pct,traffic_signal_pct,crossing_pct,stop_pct,sev4_pct,high_risk_archetype,working_name,final_name
+1,7220,Cloudy,54.6,Midday,94.52,0,19.25,64.05,9.91,11.47,14.64,10.28,11.5,1.12,2.89,FALSE,Scenario Cluster 1,Cloudy Off-Peak --- Midday
+2,16754,Cloudy,53.24,AM_Rush,53.25,12.97,10.4,58.99,9.87,9.97,16.21,9.75,9.95,1.1,1.75,FALSE,Scenario Cluster 2,Cloudy AM Rush --- Junction Heavy
+3,3730,Rain,50.97,AM_Rush,45.5,23.03,11.8,50.13,3.09,10.79,16.65,8.9,9.52,0.88,2.06,FALSE,Scenario Cluster 3,Rain AM Rush --- Junction Heavy
+4,5524,Cloudy,49.69,Early_AM,48.15,96.99,28.91,53.43,9.52,8.53,16.82,8.56,9.41,0.83,6.1,TRUE,Scenario Cluster 4,Night / Early AM --- Cloudy (High Risk)

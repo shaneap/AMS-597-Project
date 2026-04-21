@@ -1,0 +1,73 @@
+{
+  "experiment_id": "li_clustering_20260421_164931",
+  "timestamp": "2026-04-21T16:49:31-0400",
+  "workflow_version": "v3.0",
+  "parameters": {
+    "run_profile": "consensus_16gb",
+    "random_seed": 42,
+    "input_file": "/Users/survaghasiya/Documents/AMS 597 Statistical computing Project/data/li_accidents_clean.csv",
+    "total_rows": 33228,
+    "total_columns": 48,
+    "scenario_features": ["hour_band", "weekday", "weekend", "season", "rush_hour", "Sunrise_Sunset", "weather_group", "Crossing", "Junction", "Traffic_Signal", "Stop", "Temperature(F)", "Humidity(%)", "Pressure(in)", "Visibility(mi)", "Wind_Speed(mph)", "log_Duration"],
+    "reduced_features": ["hour_band", "weekday", "weekend", "season", "rush_hour", "Sunrise_Sunset", "weather_group", "Crossing", "Junction", "Traffic_Signal", "Stop", "Temperature(F)", "Humidity(%)", "Wind_Speed(mph)", "log_Duration"],
+    "candidate_k_range": [
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "selected_k": 4,
+    "dbscan_eps": 1,
+    "dbscan_minpts": 100,
+    "validation_mode": "consensus_sampled",
+    "validation_sample_n": 4000,
+    "validation_repeats": 4,
+    "stability_mode": "consensus_sampled",
+    "stability_sample_n": 2500,
+    "stability_repeats": 3,
+    "stability_bootstraps": 10
+  },
+  "metrics": {
+    "scenario_clustering": {
+      "selected_k": 4,
+      "silhouette": 0.4268,
+      "silhouette_pass": true,
+      "jaccard": 0.997,
+      "jaccard_pass": true,
+      "quality_verdict": "ACCEPTABLE"
+    },
+    "spatial_clustering": {
+      "non_noise_clusters": 12,
+      "noise_pct": 15.28,
+      "largest_cluster_share": 44.13,
+      "all_srs_targets_met": true
+    },
+    "shap_explanation": {
+      "rf_oob_error": 0.0053,
+      "rf_num_trees": 500,
+      "shap_sample_n": 500,
+      "top_3_features": ["rush_hour", "hour_band", "Sunrise_Sunset"]
+    },
+    "severity_findings": {
+      "dataset_sev4_baseline": 2.76,
+      "high_risk_clusters": 4,
+      "max_sev4_multiplier": 2.21
+    }
+  },
+  "artifacts": {
+    "clustered_dataset": "output/li_accidents_clustered.csv",
+    "figure_directory": "output/figures",
+    "table_directory": "output/tables",
+    "shap_importance_plot": "output/phase8b_global_importance.png",
+    "shap_cluster_plot": "output/phase8b_cluster_specific_importance.png",
+    "experiment_log": "output/phase8c_experiment_log.json"
+  },
+  "environment": {
+    "r_version": "4.5.2",
+    "platform": "aarch64-apple-darwin20",
+    "working_dir": "/Users/survaghasiya/Documents/AMS 597 Statistical computing Project/Longisland_Clustering",
+    "packages": "data.table, dplyr, lubridate, clustMixType, dbscan, cluster, fpc, ggplot2, ggrepel, geosphere, factoextra, knitr, rmarkdown, ranger, iml, jsonlite"
+  }
+}

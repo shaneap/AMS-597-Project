@@ -1,0 +1,3 @@
+method,k,silhouette,stability,selected
+k-Prototypes (Gower),8,0.1616,0.243,FALSE
+FAMD + k-Means (Euclidean),4,0.4268,0.997,TRUE

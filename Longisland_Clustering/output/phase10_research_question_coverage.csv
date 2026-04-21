@@ -1,0 +1,8 @@
+research_focus,evidence_source,ready
+Scenario accident archetypes,output/tables/phase8_scenario_final_names.csv,TRUE
+Spatial hotspot corridors,output/tables/phase8_spatial_final_names.csv,TRUE
+High-risk severity patterns,output/tables/phase8_severity_profile.csv,TRUE
+County composition differences,output/tables/phase8_county_profile.csv,TRUE
+Hotspot-to-scenario linkage,output/tables/phase8_spatial_scenario_crosstab.csv,TRUE
+Feature drivers of cluster identity (v3.0),output/phase8b_global_importance.csv,TRUE
+Experiment reproducibility log (v3.0),output/phase8c_experiment_log.json,TRUE

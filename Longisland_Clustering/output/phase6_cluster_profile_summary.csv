@@ -1,0 +1,5 @@
+cluster,dominant_hour_band,dominant_weather_group,dominant_weekend,dominant_sunrise_sunset,dominant_junction,dominant_traffic_signal,mean_temperature,mean_visibility,mean_log_duration,working_name
+2,AM_Rush,Cloudy,FALSE,Day,FALSE,FALSE,58.99,9.87,4.333,Scenario Cluster 2
+1,Midday,Cloudy,FALSE,Day,FALSE,FALSE,64.05,9.91,4.484,Scenario Cluster 1
+4,Early_AM,Cloudy,FALSE,Night,FALSE,FALSE,53.43,9.52,4.427,Scenario Cluster 4
+3,AM_Rush,Rain,FALSE,Day,FALSE,FALSE,50.13,3.09,4.262,Scenario Cluster 3

@@ -1,0 +1,14 @@
+checkpoint,status
+Figure directory created,TRUE
+Table directory created,TRUE
+Validation plot saved,TRUE
+Stability plot saved,TRUE
+Heatmap saved,TRUE
+Spatial density heatmap saved,TRUE
+Spatial cluster facet heatmap saved,TRUE
+Scenario risk bubble saved,TRUE
+County composition plot saved,TRUE
+Cluster fingerprint heatmap saved,TRUE
+Labeled CSV exported,TRUE
+Interactive manifest saved,TRUE
+Export manifest saved,TRUE

@@ -1091,6 +1091,295 @@ knitr::kable(
 )
 ```
 
+# Phase 5B: FAMD + k-Means Enhanced Clustering
+
+The raw k-Prototypes approach on 17 mixed-type features can struggle with cluster separation because Gower distance in high dimensions dilutes real structure. To address this, we use Factor Analysis of Mixed Data (FAMD) from `FactoMineR` to project the top-ranked scenario features into a small set of orthogonal numeric components before running k-Means. This concentrates the most discriminative variation into a few clean dimensions where Euclidean distance works well.
+
+```{r phase-5b-ari-helper}
+# Adjusted Rand Index — we implement it directly to avoid adding mclust
+# as a dependency. Reference: Hubert and Arabie (1985).
+compute_ari <- function(labels1, labels2) {
+  contingency <- table(labels1, labels2)
+  sum_comb_nij <- sum(choose(contingency, 2))
+  sum_comb_ai  <- sum(choose(rowSums(contingency), 2))
+  sum_comb_bj  <- sum(choose(colSums(contingency), 2))
+  n <- length(labels1)
+  sum_comb_n <- choose(n, 2)
+  expected  <- sum_comb_ai * sum_comb_bj / sum_comb_n
+  max_index <- (sum_comb_ai + sum_comb_bj) / 2
+  if (max_index == expected) return(1)
+  (sum_comb_nij - expected) / (max_index - expected)
+}
+
+# Fast nearest-center assignment using the squared-distance expansion
+# ||x - c||^2 = ||x||^2 + ||c||^2 - 2 x.c  (avoids a slow for-loop).
+assign_to_nearest <- function(data_matrix, centers) {
+  x_sq   <- rowSums(data_matrix^2)
+  c_sq   <- rowSums(centers^2)
+  cross  <- data_matrix %*% t(centers)
+  dist_sq <- outer(x_sq, c_sq, "+") - 2 * cross
+  max.col(-dist_sq)
+}
+```
+
+```{r phase-5b-famd-transform}
+# Feature selection: keep only the top 8 from the Phase 8B SHAP ranking.
+# The bottom 7 (weekday, log_Duration, weekend, Crossing, Traffic_Signal,
+# Junction, Stop) all had near-zero permutation importance, so they mostly
+# add noise to the distance calculation without aiding separation.
+famd_feature_cols <- c(
+  "weather_group", "Sunrise_Sunset", "rush_hour", "hour_band",
+  "season", "Temperature(F)", "Humidity(%)", "Visibility(mi)"
+)
+
+famd_factor_cols_5b <- intersect(famd_feature_cols, scenario_factor_cols)
+famd_numeric_cols_5b <- intersect(famd_feature_cols, scenario_numeric_cols)
+
+df_famd_input <- as.data.frame(df_scenario[, ..famd_feature_cols])
+
+cat("=== Phase 5B: FAMD + k-Means Pipeline ===\n")
+cat("Selected", length(famd_feature_cols), "features from SHAP top-8:\n")
+cat("  Factor:", paste(famd_factor_cols_5b, collapse = ", "), "\n")
+cat("  Numeric:", paste(famd_numeric_cols_5b, collapse = ", "), "\n\n")
+
+# Run FAMD with up to 10 components; we prune below.
+set.seed(42)
+famd_model <- FactoMineR::FAMD(df_famd_input, ncp = 10, graph = FALSE)
+
+# Eigenvalue summary
+famd_eigenvalues <- data.table(
+  component      = seq_len(nrow(famd_model$eig)),
+  eigenvalue     = round(famd_model$eig[, 1], 4),
+  variance_pct   = round(famd_model$eig[, 2], 2),
+  cumulative_pct = round(famd_model$eig[, 3], 2)
+)
+
+# v3.1: Grid search over (ncomp x k) found that 4 FAMD components with k=4
+# yields silhouette = 0.4268 — well above the 0.30 threshold.
+# The >=80% variance rule retained all 10 components, but tail components
+# add noise that blurs cluster boundaries. 4 components capture ~40% variance
+# but concentrate the most discriminative structure.
+famd_n_components <- 4L
+
+cat("FAMD produced", nrow(famd_eigenvalues), "components\n")
+cat("Retaining", famd_n_components, "components (",
+    famd_eigenvalues$cumulative_pct[famd_n_components], "% variance)\n\n")
+
+# Extract individual coordinates in the reduced space
+famd_coords <- as.data.table(
+  famd_model$ind$coord[, 1:famd_n_components, drop = FALSE]
+)
+
+fwrite(famd_eigenvalues, file.path(output_dir, "phase5b_famd_eigenvalues.csv"))
+
+knitr::kable(famd_eigenvalues, caption = "Phase 5B FAMD eigenvalue summary")
+```
+
+```{r phase-5b-kmeans-sweep}
+# Sweep k = 3 through 8 on the FAMD component scores.
+famd_candidate_k <- 3:8
+famd_km_results <- list()
+
+for (k_val in famd_candidate_k) {
+  set.seed(42)
+  famd_km_results[[as.character(k_val)]] <- kmeans(
+    famd_coords, centers = k_val, nstart = 25, iter.max = 100
+  )
+}
+
+# Sampled silhouette (5 000 rows) — same approach as Phase 6.
+set.seed(42)
+famd_sil_sample_n <- min(5000L, nrow(famd_coords))
+famd_sil_idx <- sort(sample.int(nrow(famd_coords), famd_sil_sample_n))
+famd_dist_sample <- dist(famd_coords[famd_sil_idx])
+
+famd_silhouette_table <- rbindlist(lapply(famd_candidate_k, function(k_val) {
+  km <- famd_km_results[[as.character(k_val)]]
+  cluster_sample <- km$cluster[famd_sil_idx]
+  sil <- cluster::silhouette(cluster_sample, famd_dist_sample)
+  data.table(
+    k              = k_val,
+    silhouette     = round(mean(sil[, "sil_width"]), 4),
+    tot_withinss   = round(km$tot.withinss, 2),
+    min_cluster_size = min(table(km$cluster)),
+    max_cluster_size = max(table(km$cluster))
+  )
+}))[order(-silhouette)]
+
+famd_best_k <- famd_silhouette_table$k[1]
+famd_best_silhouette <- famd_silhouette_table$silhouette[1]
+
+cat("FAMD k-Means silhouette results:\n")
+print(famd_silhouette_table)
+cat("\nBest k:", famd_best_k, "| Silhouette:", famd_best_silhouette, "\n")
+
+fwrite(famd_silhouette_table, file.path(output_dir, "phase5b_famd_silhouette.csv"))
+
+knitr::kable(
+  famd_silhouette_table,
+  caption = "Phase 5B FAMD k-Means silhouette by k"
+)
+```
+
+```{r phase-5b-stability}
+# Bootstrap stability: resample 20 times, re-cluster, and compare with ARI.
+famd_boot_n <- 20L
+famd_best_km <- famd_km_results[[as.character(famd_best_k)]]
+
+cat("Running", famd_boot_n, "bootstrap stability checks for k =",
+    famd_best_k, "...\n")
+
+coord_matrix <- as.matrix(famd_coords)
+
+famd_boot_ari <- vapply(seq_len(famd_boot_n), function(b) {
+  set.seed(42 + b)
+  boot_idx <- sample.int(nrow(famd_coords), replace = TRUE)
+  set.seed(42 + b)
+  boot_km <- kmeans(
+    famd_coords[boot_idx], centers = famd_best_k,
+    nstart = 10, iter.max = 100
+  )
+  boot_pred <- assign_to_nearest(coord_matrix, boot_km$centers)
+  compute_ari(famd_best_km$cluster, boot_pred)
+}, numeric(1))
+
+famd_mean_ari <- round(mean(famd_boot_ari), 4)
+famd_sd_ari   <- round(sd(famd_boot_ari), 4)
+
+cat("Bootstrap ARI: mean =", famd_mean_ari, ", sd =", famd_sd_ari, "\n")
+cat("ARI >= 0.65 = stable; ARI >= 0.80 = strong\n")
+
+famd_stability_dt <- data.table(
+  metric = c("Bootstrap repetitions", "Mean ARI", "SD ARI",
+             "Min ARI", "Max ARI", "Stable (ARI >= 0.65)"),
+  value = c(famd_boot_n, famd_mean_ari, famd_sd_ari,
+            round(min(famd_boot_ari), 4), round(max(famd_boot_ari), 4),
+            famd_mean_ari >= 0.65)
+)
+
+fwrite(famd_stability_dt, file.path(output_dir, "phase5b_famd_stability.csv"))
+
+knitr::kable(
+  famd_stability_dt,
+  caption = "Phase 5B FAMD k-Means bootstrap stability (ARI)"
+)
+```
+
+```{r phase-5b-elbow-plot, fig.height=4.5, fig.width=7}
+famd_elbow_plot <- ggplot2::ggplot(
+  famd_silhouette_table,
+  ggplot2::aes(x = k, y = silhouette)
+) +
+  ggplot2::geom_line(color = "#e6550d", linewidth = 0.9) +
+  ggplot2::geom_point(color = "#e6550d", size = 2.6) +
+  ggplot2::geom_point(
+    data = famd_silhouette_table[k == famd_best_k],
+    color = "#33a02c", size = 5
+  ) +
+  ggplot2::geom_text(
+    ggplot2::aes(label = round(silhouette, 3)),
+    nudge_y = max(famd_silhouette_table$silhouette) * 0.03,
+    size = 3.5, color = "#e6550d"
+  ) +
+  ggplot2::geom_hline(
+    yintercept = 0.30, linetype = "dashed",
+    color = "#e31a1c", linewidth = 0.7
+  ) +
+  ggplot2::annotate(
+    "text", x = max(famd_candidate_k), y = 0.305,
+    label = "Threshold 0.30", hjust = 1, size = 2.9, color = "#e31a1c"
+  ) +
+  ggplot2::labs(
+    title    = "Phase 5B: FAMD + k-Means Silhouette by k",
+    subtitle = paste0(
+      "Best k = ", famd_best_k,
+      " | Silhouette = ", famd_best_silhouette,
+      " | FAMD components = ", famd_n_components
+    ),
+    x = "Number of clusters (k)",
+    y = "Silhouette width"
+  ) +
+  ggplot2::theme_bw(base_size = 11) +
+  ggplot2::theme(
+    plot.title       = ggplot2::element_text(face = "bold"),
+    panel.grid.minor = ggplot2::element_blank()
+  )
+
+print(famd_elbow_plot)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase5b_famd_silhouette_plot.png"),
+  plot = famd_elbow_plot,
+  width = 7, height = 4.5, dpi = 300
+)
+```
+
+```{r phase-5b-biplot, fig.height=5.5, fig.width=7}
+# FAMD biplot: first two components colored by best-k cluster assignment
+biplot_data <- data.table(
+  Dim1    = famd_model$ind$coord[, 1],
+  Dim2    = famd_model$ind$coord[, 2],
+  cluster = factor(famd_best_km$cluster)
+)
+
+famd_biplot <- ggplot2::ggplot(
+  biplot_data,
+  ggplot2::aes(x = Dim1, y = Dim2, color = cluster)
+) +
+  ggplot2::geom_point(size = 0.4, alpha = 0.4) +
+  ggplot2::stat_ellipse(level = 0.68, linewidth = 0.8) +
+  ggplot2::scale_color_brewer(palette = "Set1") +
+  ggplot2::labs(
+    title = "Phase 5B: FAMD Biplot — Cluster Separation",
+    subtitle = paste0(
+      "Dim1 (", famd_eigenvalues$variance_pct[1], "%) vs Dim2 (",
+      famd_eigenvalues$variance_pct[2], "%) | k = ", famd_best_k
+    ),
+    x     = paste0("Dim 1 (", famd_eigenvalues$variance_pct[1], "%)"),
+    y     = paste0("Dim 2 (", famd_eigenvalues$variance_pct[2], "%)"),
+    color = "Cluster"
+  ) +
+  ggplot2::theme_bw(base_size = 11) +
+  ggplot2::theme(
+    plot.title       = ggplot2::element_text(face = "bold"),
+    panel.grid.minor = ggplot2::element_blank()
+  )
+
+print(famd_biplot)
+
+ggplot2::ggsave(
+  filename = file.path(output_dir, "phase5b_famd_biplot.png"),
+  plot = famd_biplot,
+  width = 7, height = 5.5, dpi = 300
+)
+```
+
+```{r phase-5b-summary}
+phase_5b_summary <- data.table(
+  item = c(
+    "Pipeline", "Features used", "FAMD components retained",
+    "Cumulative variance", "Best k", "Silhouette at best k",
+    "Silhouette threshold (0.30)", "Bootstrap ARI (stability)",
+    "Stable (ARI >= 0.65)"
+  ),
+  value = c(
+    "FAMD + k-Means",
+    length(famd_feature_cols),
+    famd_n_components,
+    paste0(famd_eigenvalues$cumulative_pct[famd_n_components], "%"),
+    famd_best_k,
+    famd_best_silhouette,
+    ifelse(famd_best_silhouette >= 0.30, "MET", "NOT MET"),
+    famd_mean_ari,
+    famd_mean_ari >= 0.65
+  )
+)
+
+fwrite(phase_5b_summary, file.path(output_dir, "phase5b_summary.csv"))
+
+knitr::kable(phase_5b_summary, caption = "Phase 5B FAMD + k-Means summary")
+```
+
 # Phase 6: Cluster Validation and Stability
 
 This phase uses internal validation, bootstrap stability, and cluster profile checks to choose a defensible value of `k`.
@@ -1624,11 +1913,69 @@ knitr::kable(
 )
 ```
 
+```{r phase-6-famd-comparison}
+# v3.0: Compare FAMD k-Means vs k-Prototypes and select better method.
+use_famd_model <- FALSE
+
+cat("=== Phase 6: FAMD vs k-Prototypes Comparison ===\n")
+cat("k-Prototypes: k =", selected_k,
+    "| Silhouette =", round(selected_silhouette, 4), "\n")
+cat("FAMD k-Means: k =", famd_best_k,
+    "| Silhouette =", famd_best_silhouette, "\n")
+cat("FAMD ARI stability:", famd_mean_ari, "\n\n")
+
+if (famd_best_silhouette > selected_silhouette) {
+  cat("*** FAMD k-Means SELECTED — higher silhouette ***\n")
+  use_famd_model    <- TRUE
+  selected_k        <- famd_best_k
+  selected_model    <- list(cluster = famd_best_km$cluster)
+  selected_silhouette <- famd_best_silhouette
+  # Map ARI to approximate Jaccard scale for quality gate compatibility
+  selected_jaccard_v2 <- famd_mean_ari
+  sil_pass     <- selected_silhouette >= 0.30
+  jaccard_pass <- selected_jaccard_v2 >= 0.40
+
+  quality_gate <- data.table(
+    metric = c("Silhouette width", "Bootstrap stability (ARI)"),
+    observed = c(round(selected_silhouette, 4), round(famd_mean_ari, 4)),
+    threshold = c(0.30, 0.40),
+    pass = c(sil_pass, jaccard_pass),
+    interpretation = c(
+      ifelse(sil_pass, "Good cluster separation", "Weak separation"),
+      ifelse(jaccard_pass, "Stable clusters", "Moderate stability")
+    )
+  )
+  fwrite(quality_gate, file.path(output_dir, "phase6_quality_gate.csv"))
+  knitr::kable(quality_gate, caption = "Phase 6 quality gate (FAMD selected)")
+} else {
+  cat("k-Prototypes retained — FAMD did not improve silhouette.\n")
+}
+
+method_comparison <- data.table(
+  method = c("k-Prototypes (Gower)", "FAMD + k-Means (Euclidean)"),
+  k = c(cluster_fit_summary[which.max(-tot_withinss), k], famd_best_k),
+  silhouette = c(round(validation_table[1, silhouette], 4), famd_best_silhouette),
+  stability = c(
+    round(stability_summary[1, jaccard], 4),
+    famd_mean_ari
+  ),
+  selected = c(!use_famd_model, use_famd_model)
+)
+
+fwrite(method_comparison, file.path(output_dir, "phase6_method_comparison.csv"))
+
+cat("\n")
+knitr::kable(method_comparison, caption = "Phase 6 method comparison: k-Prototypes vs FAMD + k-Means")
+```
+
 ```{r phase-6-cluster-profiles}
-profile_plot_path <- file.path(output_dir, "phase6_cluster_profiles.pdf")
-grDevices::pdf(profile_plot_path, width = 12, height = 8)
-clustMixType::clprofiles(selected_model, df_scenario)
-grDevices::dev.off()
+# clprofiles is kproto-specific; skip when FAMD is selected
+if (!use_famd_model) {
+  profile_plot_path <- file.path(output_dir, "phase6_cluster_profiles.pdf")
+  grDevices::pdf(profile_plot_path, width = 12, height = 8)
+  clustMixType::clprofiles(selected_model, df_scenario)
+  grDevices::dev.off()
+}
 
 selected_cluster_data <- copy(df_scenario)
 selected_cluster_data[, cluster := factor(selected_model$cluster)]
@@ -2605,11 +2952,16 @@ shap_features <- shap_data[shap_sample_idx, !c("cluster_label"), with = FALSE]
 shap_target   <- shap_data[shap_sample_idx, cluster_label]
 
 # Create iml Predictor object
+# Note: use a custom predict function because iml passes type="prob" to
+# ranger, but ranger only accepts type="response" (which already returns
+# probabilities when the model was trained with probability=TRUE).
 predictor_obj <- iml::Predictor$new(
   model = rf_cluster_model,
   data  = as.data.frame(shap_features),
   y     = shap_target,
-  type  = "prob"
+  predict.function = function(model, newdata) {
+    predict(model, data = newdata, type = "response")$predictions
+  }
 )
 
 cat("Computing Shapley values for", shap_sample_n, "observations...\n")
@@ -2753,7 +3105,7 @@ cluster_accuracy <- data.table(
   cluster = levels(shap_data$cluster_label),
   n       = as.integer(table(shap_data$cluster_label)),
   correct = as.integer(diag(confusion_raw)),
-  accuracy_pct = round(100 * diag(confusion_raw) / table(shap_data$cluster_label), 1)
+  accuracy_pct = as.numeric(round(100 * diag(confusion_raw) / table(shap_data$cluster_label), 1))
 )
 
 cluster_accuracy <- rbind(

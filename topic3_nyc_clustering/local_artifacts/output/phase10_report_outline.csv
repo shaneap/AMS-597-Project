@@ -1,0 +1,10 @@
+report_section,main_source,ready
+Introduction and motivation,Li_Clustering_SRS.tex,TRUE
+Dataset description and audit findings,local_artifacts/output/tables/phase8_severity_profile.csv,TRUE
+Feature engineering decisions,local_artifacts/output/tables/phase8_weather_time_profile.csv,TRUE
+Method selection rationale,Li_Clustering_Execution_Plan.tex,TRUE
+Scenario clustering results,local_artifacts/output/figures/phase9_validation_index_plot.png,TRUE
+Spatial hotspot results,local_artifacts/output/figures/phase7_spatial_hotspot_map.png,TRUE
+Interpretation and cross-tab findings,local_artifacts/output/tables/phase8_spatial_scenario_crosstab.csv,TRUE
+Limitations,local_artifacts/output/phase10_limitations_table.csv,TRUE
+Conclusion and safety priorities,local_artifacts/output/phase10_research_question_coverage.csv,TRUE

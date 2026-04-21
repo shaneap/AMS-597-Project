@@ -1,0 +1,11 @@
+metric,value
+Validation method,silhouette
+Validation mode,consensus_sampled
+Validation rows,4000
+Stability mode,consensus_sampled
+Stability rows,2500
+Stability bootstraps,10
+Validation-optimal k,7
+Top two k values for stability,"7, 3"
+Selected k,3
+Selected k Jaccard,0.243

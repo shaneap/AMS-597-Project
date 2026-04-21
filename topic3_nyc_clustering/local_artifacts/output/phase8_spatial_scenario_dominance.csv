@@ -1,0 +1,13 @@
+dominant_scenario_cluster,spatial_cluster,corridor_label,dominant_count,dominant_pct,dominant_scenario_name
+1,5,Surface Road Cluster,89,47.59,Clear AM Rush --- Junction Heavy
+1,6,Surface Road Cluster,104,43.51,Clear AM Rush --- Junction Heavy
+1,9,Northern State Parkway,48,36.92,Clear AM Rush --- Junction Heavy
+1,11,Sunrise Highway,55,39.29,Clear AM Rush --- Junction Heavy
+2,1,Long Island Expressway (I-495),624,56.88,Cloudy AM Rush --- Junction Heavy
+2,2,Northern State Parkway,6083,41.12,Cloudy AM Rush --- Junction Heavy
+2,3,Southern State Parkway,4079,36.81,Cloudy AM Rush --- Junction Heavy
+2,4,Surface Road Cluster,66,44,Cloudy AM Rush --- Junction Heavy
+2,7,Northern State Parkway,76,57.58,Cloudy AM Rush --- Junction Heavy
+2,8,Meadowbrook / Wantagh Pkwy,39,39,Cloudy AM Rush --- Junction Heavy
+2,10,Surface Road Cluster,46,51.11,Cloudy AM Rush --- Junction Heavy
+3,12,Meadowbrook / Wantagh Pkwy,74,46.54,Night / Early AM --- Cloudy (High Risk)

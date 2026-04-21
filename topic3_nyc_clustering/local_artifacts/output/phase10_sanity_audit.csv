@@ -1,0 +1,8 @@
+check,status,note
+Scenario names are unique,TRUE,Final scenario names should be distinct for presentation and discussion.
+Scenario labels have no gaps,TRUE,Every row should carry a scenario label after the join.
+Spatial labels have no gaps,TRUE,Every row should carry a spatial label after the join.
+Selected scenario stability is at least moderate,FALSE,A Jaccard score below 0.4 should be presented as exploratory rather than settled.
+Largest spatial cluster stays below 60% of all rows,TRUE,This avoids one hotspot absorbing most of Long Island.
+DBSCAN cluster-count target met,TRUE,The SRS target is between 3 and 15 non-noise clusters.
+DBSCAN noise target met,TRUE,The SRS target is between 5% and 30% noise.

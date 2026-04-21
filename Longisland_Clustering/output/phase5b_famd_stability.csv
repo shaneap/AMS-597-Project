@@ -1,0 +1,7 @@
+metric,value
+Bootstrap repetitions,20
+Mean ARI,0.997
+SD ARI,0.0013
+Min ARI,0.9946
+Max ARI,0.9998
+Stable (ARI >= 0.65),1
