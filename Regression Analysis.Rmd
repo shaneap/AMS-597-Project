@@ -11,13 +11,13 @@ output: pdf_document
 library(caret)
 library(nnet)
 library(glmnet)
+library(data.table)
 ```
 
 # Data Loading
 
 ```{r}
-d <- read.csv('data/US_Accidents_March23.csv')
-
+d <- data.table::fread('./US_Accidents_March23.csv')
 ```
 
 # Data Processing
@@ -47,7 +47,7 @@ head(d)
 summary(d)
 # Turning_Loop all false -> drop
 
-cols <- c('Severity','Start_Lat','Start_Lng','Distance.mi.','Temperature.F.','Humidity...','Pressure.in.','Visibility.mi.','Wind_Speed.mph.','Precipitation.in.','Amenity','Bump','Crossing','Give_Way','Junction','No_Exit','Railway','Roundabout','Station','Stop','Traffic_Calming','Traffic_Signal','Sunrise_Sunset')
+cols <- c('Severity','Start_Lat','Start_Lng','Distance(mi)','Temperature(F)','Humidity(%)','Pressure(in)','Visibility(mi)','Wind_Speed(mph)','Precipitation(in)','Amenity','Bump','Crossing','Give_Way','Junction','No_Exit','Railway','Roundabout','Station','Stop','Traffic_Calming','Traffic_Signal','Sunrise_Sunset')
 
 
 ```
@@ -61,7 +61,7 @@ d.clean <- na.omit(d.clean)
 summary(d.clean)
 
 set.seed(123)
-index <- createDataPartition(d.clean$Distance.mi.,p=0.75,list=FALSE)
+index <- createDataPartition(d.clean$`Distance(mi)`,p=0.75,list=FALSE)
 train.data <- d.clean[index,]
 test.data <- d.clean[-index,]
 ```
@@ -69,16 +69,16 @@ test.data <- d.clean[-index,]
 
 
 ```{r}
-model <- lm(Distance.mi. ~ ., data = train.data)
+model <- lm(`Distance(mi)` ~ ., data = train.data)
 summary(model)
 
 pred <- predict(model, newdata = test.data)
-RMSE(pred,test.data$Distance.mi.)
+RMSE(pred,test.data$`Distance(mi)`)
 ```
 
 ```{r}
-x <- model.matrix(Distance.mi. ~ ., data = train.data)[, -1] 
-y <- train.data$Distance.mi.
+x <- model.matrix(`Distance(mi)` ~ ., data = train.data)[, -1] 
+y <- train.data$`Distance(mi)`
 
 cv_model <- cv.glmnet(x, y, alpha = 1)
 best_lambda <- cv_model$lambda.min  # Lambda for lowest MSE
