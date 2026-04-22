@@ -87,7 +87,7 @@ Multiple Linear Regression was applied to the dataset. To check for robustness, 
 | Traffic_SignalTRUE |  -4.509e-01 | -0.45387 | 3.067e-03 | -147.022 | < 2e-16 | *** |
 | Sunrise_SunsetDay  |  -3.144e-01 | -0.21934 | 1.491e-02 |  -21.084 | < 2e-16 | *** |
 | Sunrise_SunsetNight | -3.659e-01 | -0.25742 | 1.496e-02 |  -24.459 | < 2e-16 | *** |
----
+
 Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
 
 ### 1.4 Limitations
