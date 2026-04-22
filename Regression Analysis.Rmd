@@ -46,36 +46,24 @@ head(d)
 
 summary(d)
 # Turning_Loop all false -> drop
-
-cols <- c('Severity','Distance(mi)','Temperature(F)','Humidity(%)','Pressure(in)','Visibility(mi)','Wind_Speed(mph)','Precipitation(in)','Amenity','Bump','Crossing','Give_Way','Junction','No_Exit','Railway','Roundabout','Station','Stop','Traffic_Calming','Traffic_Signal','Sunrise_Sunset')
-
-
 ```
 
-
-
 ```{r}
-d.clean <- subset(d, select = cols)
-d.clean <- na.omit(d.clean)
+cols <- c('Severity','Distance(mi)','Temperature(F)','Humidity(%)','Pressure(in)','Visibility(mi)','Wind_Speed(mph)','Precipitation(in)','Amenity','Bump','Crossing','Give_Way','Junction','No_Exit','Railway','Roundabout','Station','Stop','Traffic_Calming','Traffic_Signal','Sunrise_Sunset')
+
+d.clean <- subset(d, select = cols) # Select only columns for modeling
+d.clean <- na.omit(d.clean) # Drop rows with missing observations
 
 summary(d.clean)
 
+# Create the training and testing datasets
 set.seed(123)
 index <- createDataPartition(d.clean$`Distance(mi)`,p=0.75,list=FALSE)
 train.data <- d.clean[index,]
 test.data <- d.clean[-index,]
 ```
 
-```{r}
-nrow(d.clean)
-test <- d.clean[d.clean$'Distance(mi)' == 0.01]
-test2 <- d.clean[d.clean$'Distance(mi)' == 0.00]
-nrow(test)
-nrow(test2)
-mean(d.clean$'Distance(mi)')
-sd(d.clean$'Distance(mi)')
-```
-
+# MLR Modeling
 
 ```{r}
 model <- lm(`Distance(mi)` ~ ., data = train.data)
@@ -84,6 +72,8 @@ summary(model)
 pred <- predict(model, newdata = test.data)
 RMSE(pred,test.data$`Distance(mi)`)
 ```
+
+# LASSO regression modeling
 
 ```{r}
 x <- model.matrix(`Distance(mi)` ~ ., data = train.data)[, -1] 
