@@ -17,7 +17,7 @@ This report analyzes traffic accident patterns on Long Island using the US Accid
 
 Three research questions are addressed:
 
-1. **[Research Question 1 — to be completed]**
+1. Can regression analysis show what factors contribute to overall accident distance?
 2. Can unsupervised clustering reveal distinct accident archetypes on Long Island, and do those archetypes differ in severity risk?
 3. Can machine learning models predict whether a crash will be high-severity (Severity 3–4) using only information available at the time of the accident?
 
@@ -34,8 +34,69 @@ Raw data required several cleaning steps before modeling:
 
 ---
 
-> **[ Section 1 — Research Question 1 placeholder ]**
-> *Insert the full RQ1 write-up here. Estimated length: 6–8 pages. The combined report should remain under 25 pages excluding appendices.*
+## Research Question 1: Regression Analysis
+
+**Question:** Can regression analysis show what factors contribute to overall accident distance?
+
+We examine what 
+
+### 1.1 Data and Feature Engineering
+
+The regression analysis uses a lightly filtered subset of the national dataset, containing **5,400,564 accidents** across the entire United States between 2016 and 2023. The raw accident table includes temporal, weather, infrastructure, and outcome variables.
+
+The key features included in the model are summarized below.
+
+| Domain | Features | Notes |
+|---|---|---|
+| Temporal (factor) | `Sunrise_Sunset` | Interpreted as a factor |
+| Infrastructure | 'Amenity','Bump','Crossing','Give_Way','Junction','No_Exit','Railway','Roundabout','Station','Stop','Traffic_Calming','Traffic_Signal' | Boolean arguments interpreted as factors |
+| Weather (numeric) | 'Temperature(F)','Humidity(%)','Pressure(in)','Visibility(mi)','Wind_Speed(mph)','Precipitation(in)' | Imputed missing values as 0 for Precipitation(in) and Wind_Speed(mph). Dropped NAs for other values |
+| Target | 'Severity', 'Distance(mi) | Our response variables of interest |
+
+### 2.2 Methods
+
+Multiple Linear Regression was applied to the dataset. To check for robustness, a LASSO regression model (with a 10-fold cross-validated lambda value) was also fitted to look for weaker variables.
+
+### 2.3 Results
+
+#### Method Comparison
+
+| Feature | Estimate | LASSO Estimate | Std. Error | t value | Pr(>|t|) | Significance |  
+|---|---|---|---|---|---|---|
+| (Intercept)         | 4.249e+00 | 3.88994 | 2.977e-02 | 142.719 | < 2e-16 | *** |
+| Severity2           | 3.554e-01 | 0.36108 | 8.474e-03 |  41.934 | < 2e-16 | *** |
+| Severity3           | 8.680e-02 | 0.07901 | 8.835e-03 |   9.825 | < 2e-16 | *** |
+| Severity4           | 1.052e+00 | 1.03149 | 1.022e-02 | 102.981 | < 2e-16 | *** |
+| `Temperature(F)`  |  -3.047e-03 | -0.00177 | 5.400e-05 | -56.429 | < 2e-16 | *** |
+| `Humidity(%)`     |  -5.960e-04 | -0.00064 | 4.732e-05 | -12.595 | < 2e-16 | *** |
+| `Pressure(in)`    |  -1.074e-01 | -0.10665 | 8.580e-04 | -125.206 | < 2e-16 | *** |
+| `Visibility(mi)`  |  -1.861e-02 | -0.01874 | 3.797e-04 | -49.018 | < 2e-16 | *** |
+| `Wind_Speed(mph)` |   5.686e-03 | 0.00490 | 1.691e-04 |  33.631 | < 2e-16 | *** |
+| `Precipitation(in)` | -3.428e-02 | -0.03752 | 1.036e-02 |  -3.310 | 0.000931 | *** |
+| AmenityTRUE       |  -1.571e-01 | -0.17265 | 8.399e-03 | -18.703 | < 2e-16 | *** |
+| BumpTRUE          |  -2.508e-01 | -0.21473 | 5.629e-02 |  -4.456 | 8.35e-06 | *** |
+| CrossingTRUE      |  -2.635e-01 | -0.25944 | 3.422e-03 | -77.001 | < 2e-16 | *** |
+| Give_WayTRUE      |  -1.780e-02 | -0.03408 | 1.380e-02 |  -1.290 | 0.197203 |   |  
+| JunctionTRUE      |   1.473e-01 |  0.14440 | 3.569e-03 |  41.278 | < 2e-16 | *** |
+| No_ExitTRUE       |  -1.336e-01 | -0.13469 | 1.768e-02 |  -7.559 | 4.07e-14 | *** |
+| RailwayTRUE       |  -2.526e-02 | -0.02569 | 1.008e-02 |  -2.505 | 0.012242 | * | 
+| RoundaboutTRUE    |  -6.371e-01 | -0.61451 | 1.639e-01 |  -3.888 | 0.000101 | *** |
+| StationTRUE       |  -2.279e-01 | -0.21366 | 5.745e-03 | -39.672 | < 2e-16 | *** |
+| StopTRUE          |  -3.829e-01 | -0.37709 | 5.603e-03 | -68.342 | < 2e-16 | *** |
+| Traffic_CalmingTRUE |  1.199e-02 | 0 | 3.929e-02 |   0.305 | 0.760126 |    |
+| Traffic_SignalTRUE |  -4.509e-01 | -0.45387 | 3.067e-03 | -147.022 | < 2e-16 | *** |
+| Sunrise_SunsetDay  |  -3.144e-01 | -0.21934 | 1.491e-02 |  -21.084 | < 2e-16 | *** |
+| Sunrise_SunsetNight | -3.659e-01 | -0.25742 | 1.496e-02 |  -24.459 | < 2e-16 | *** |
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+### 1.4 Limitations
+
+Model RMSE was low at just 1.795, but the R-squared score for the model was a paltry .03051, indicating limited explainability of distance as a response variable.
+
+### 1.5 Conclusion
+
+The regression modelling didn't reveal many strong insights about factors affecting accident distance. Weather variables performed surprisingly poorly. Perhaps most interestingly, total accident distance has the strongest relationship with Type 4 Severity incidents, likely indicating they are larger geogrpahically than the other severity levels.
 
 ---
 

@@ -17,7 +17,7 @@ library(data.table)
 # Data Loading
 
 ```{r}
-d <- data.table::fread('./US_Accidents_March23.csv')
+d <- data.table::fread('./data/US_Accidents_March23.csv')
 ```
 
 # Data Processing
@@ -47,7 +47,7 @@ head(d)
 summary(d)
 # Turning_Loop all false -> drop
 
-cols <- c('Severity','Start_Lat','Start_Lng','Distance(mi)','Temperature(F)','Humidity(%)','Pressure(in)','Visibility(mi)','Wind_Speed(mph)','Precipitation(in)','Amenity','Bump','Crossing','Give_Way','Junction','No_Exit','Railway','Roundabout','Station','Stop','Traffic_Calming','Traffic_Signal','Sunrise_Sunset')
+cols <- c('Severity','Distance(mi)','Temperature(F)','Humidity(%)','Pressure(in)','Visibility(mi)','Wind_Speed(mph)','Precipitation(in)','Amenity','Bump','Crossing','Give_Way','Junction','No_Exit','Railway','Roundabout','Station','Stop','Traffic_Calming','Traffic_Signal','Sunrise_Sunset')
 
 
 ```
@@ -66,6 +66,15 @@ train.data <- d.clean[index,]
 test.data <- d.clean[-index,]
 ```
 
+```{r}
+nrow(d.clean)
+test <- d.clean[d.clean$'Distance(mi)' == 0.01]
+test2 <- d.clean[d.clean$'Distance(mi)' == 0.00]
+nrow(test)
+nrow(test2)
+mean(d.clean$'Distance(mi)')
+sd(d.clean$'Distance(mi)')
+```
 
 
 ```{r}
