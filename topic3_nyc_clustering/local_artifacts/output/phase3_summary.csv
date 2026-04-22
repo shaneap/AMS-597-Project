@@ -1,6 +1,0 @@
-feature_group,status
-Temporal features,"Added hour, hour_band, weekday, weekend, month, season, rush_hour"
-Duration treatment,Added Duration_cap and log_Duration
-Weather grouping,Added weather_group with 7 levels
-Wind normalization,Added wind_dir_norm with at most 9 levels
-Binary flag audit,Marked zero and near-zero flags for exclusion; retained core road-context flags

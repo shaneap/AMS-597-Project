@@ -1,6 +1,0 @@
-setting,value
-validation_mode,consensus_sampled
-validation_rows,4000
-full_rows,33375
-sample_fraction,0.1199
-validation_repeats,4

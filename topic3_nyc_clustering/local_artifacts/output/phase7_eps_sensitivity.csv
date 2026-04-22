@@ -1,4 +1,0 @@
-eps,n_clusters,noise_pct,max_cluster_share_pct,within_srs_targets
-0.9,14,16.58,51.43,TRUE
-1,12,15.22,52.28,TRUE
-1.1,8,13.65,92.46,FALSE

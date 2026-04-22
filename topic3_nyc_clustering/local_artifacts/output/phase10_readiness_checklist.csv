@@ -1,9 +1,0 @@
-deliverable,path,ready
-Long Island SRS source,Li_Clustering_SRS.tex,TRUE
-Execution plan source,Li_Clustering_Execution_Plan.tex,TRUE
-Main workflow Rmd,li_clustering.Rmd,TRUE
-Cleaned dataset,../li_accidents_clean.csv,TRUE
-Clustered labeled dataset,local_artifacts/output/tables/li_accidents_clustered.csv,TRUE
-Figure export folder,local_artifacts/output/figures,TRUE
-Table export folder,local_artifacts/output/tables,TRUE
-Interactive export manifest,local_artifacts/output/phase9_interactive_manifest.csv,TRUE

@@ -1,9 +1,0 @@
-deliverable_group,deliverable,path,ready
-Core source,Li_Clustering_SRS.tex,Li_Clustering_SRS.tex,TRUE
-Core source,Li_Clustering_Execution_Plan.tex,Li_Clustering_Execution_Plan.tex,TRUE
-Core source,li_clustering.Rmd,li_clustering.Rmd,TRUE
-Data,li_accidents_clean.csv,../li_accidents_clean.csv,TRUE
-Data,li_accidents_clustered.csv,local_artifacts/output/tables/li_accidents_clustered.csv,TRUE
-Exports,Figure directory,local_artifacts/output/figures,TRUE
-Exports,Table directory,local_artifacts/output/tables,TRUE
-Exports,Phase 10 checklist bundle,local_artifacts/output,TRUE

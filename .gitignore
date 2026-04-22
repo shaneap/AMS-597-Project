@@ -19,3 +19,4 @@ Longisland_Clustering/output/interactive/
 
 # Archived PDFs (optional, uncomment to skip tracking old PDFs)
 # Longisland_Clustering/archive/*.pdf
+.RDataTmp
