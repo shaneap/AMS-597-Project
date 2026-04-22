@@ -2,6 +2,7 @@
 output:
   pdf_document: default
   html_document: default
+geometry: margin=0.80in
 ---
 # Traffic Safety Analysis on Long Island
 **AMS 597 — Statistical Computing | Spring 2026**  
@@ -42,125 +43,186 @@ Raw data required several cleaning steps before modeling:
 
 **Question:** Can unsupervised learning reveal distinct accident archetypes on Long Island based on weather and road characteristics, and do those archetypes differ in severity risk?
 
-This is approached through two parallel tracks — scenario clustering (what type of accident?) and spatial clustering (where does it concentrate?) — then cross-tabulated to identify which accident profiles dominate each highway corridor. Severity is excluded from all clustering inputs and used only afterward for post-cluster profiling.
+We address this through two parallel clustering tracks: **scenario clustering** asks what type of accident tends to occur under similar temporal, weather, and infrastructure conditions, while **spatial clustering** asks where crashes concentrate geographically. The two label sets are then joined to each accident for joint interpretation. Severity is excluded from all clustering inputs and used only after clustering for profiling and risk comparison.
 
-### 2.1 Methods
+### 2.1 Data and Feature Engineering
 
-#### Scenario Clustering: k-Prototypes (Baseline)
+The clustering analysis uses the Long Island subset of the cleaned dataset, containing **33,228 accidents** across Nassau and Suffolk counties between 2016 and 2023. The raw accident table includes temporal, weather, infrastructure, and outcome variables. Before clustering, the data were transformed into a mixed-type feature set designed to capture accident context rather than post-crash outcomes.
 
-k-Prototypes extends k-Means to mixed data by combining Euclidean distance for continuous variables with simple matching distance for categorical ones. Candidates at k $\in$ {3,...,8} were fit with Gower range-normalisation, nstart=10, and seed 42.
+The key engineered scenario features are summarized below.
 
-The baseline produced a silhouette of 0.1616 at k = 3 — well below the 0.30 acceptance threshold (Kaufman & Rousseeuw, 1990) — and a Jaccard bootstrap stability of 0.243, far below the 0.60 acceptable level (Hennig, 2007). Figure 1 shows the silhouette curve across all candidate k values, none of which clear the threshold.
+| Domain | Features | Notes |
+|---|---|---|
+| Temporal (factor) | `hour_band`, `rush_hour`, `Sunrise_Sunset`, `weekday`, `weekend`, `season` | `hour_band` groups the day into six periods; rush-hour flags target 6–9 AM and 3–6 PM |
+| Weather (factor) | `weather_group` | 37 raw labels collapsed to 7 groups: Clear, Cloudy, Rain, Snow/Ice, Fog/Haze, Thunderstorm, Other |
+| Infrastructure | `Junction`, `Crossing`, `Traffic_Signal`, `Stop` | Boolean flags retained after zero-variance / near-zero-variance screening |
+| Weather (numeric) | `Temperature(F)`, `Humidity(%)`, `Visibility(mi)`, `Pressure(in)`, `Wind_Speed(mph)` | Cleaned numeric weather inputs; sparse missing values are median-imputed when needed |
+| Duration | `log_Duration` | Accident duration capped at the 99th percentile and log-transformed |
 
-![Figure 1: k-Prototypes silhouette validation across candidate k values.](figures/c_kproto_silhouette.png)
+Two design decisions matter for interpretation. First, **Severity is excluded from all clustering inputs**, so the clusters are driven by observable conditions at or near the time of the crash rather than by the outcome itself. Second, **Precipitation(in)** is excluded because 20.1% of values are missing, which would otherwise force a much heavier imputation burden.
 
-*Figure 1: k-Prototypes silhouette validation. No configuration clears the 0.30 acceptance threshold, classifying all findings as exploratory.*
+### 2.2 Methods
+
+The clustering workflow contains a preparation layer, a scenario track, a spatial track, and an integration layer that merges both label sets back onto each accident.
+
+\begin{center}
+\includegraphics[width=1.00\linewidth]{figures/rq2_flowchart.png}
+\end{center}
+
+*Figure 1: End-to-end workflow for the clustering analysis. Preparation phases create analysis-ready features, two clustering tracks are run in parallel, and the resulting labels are joined for interpretation, explainability, and export.*
+
+#### Scenario Clustering: k-Prototypes Baseline
+
+We first fit a **k-Prototypes** baseline on the 17 mixed-type scenario features. Candidate values were evaluated for $k \in \{3,\dots,8\}$ with Gower range-normalisation, `nstart = 10`, and seed 42. The purpose of this baseline was to test whether a direct mixed-data clustering approach would be sufficient without dimensionality reduction.
+
+That baseline produced weak separation, with the best silhouette at **0.1616** for $k=3$. This is below the usual 0.30 rule-of-thumb threshold for acceptable clustering quality, so the baseline was kept as a reference rather than as the final solution.
 
 #### Scenario Clustering: FAMD + k-Means
 
-To improve separation, a two-stage dimensionality reduction strategy guided by SHAP feature importance was implemented.
+Because the direct mixed-data approach was weak, we implemented an enhanced **FAMD + k-Means** pipeline.
 
-A preliminary 500-tree Random Forest ranked all 17 scenario features by permutation importance. The bottom 9 features — weekday, log_Duration, weekend, Wind_Speed, Pressure, Crossing, Traffic_Signal, Junction, Stop — all had near-zero scores and were dropped. The remaining 8 features (rush_hour, hour_band, Sunrise_Sunset, Visibility(mi), weather_group, Humidity(%), Temperature(F), season) were passed into Factor Analysis of Mixed Data (FactoMineR::FAMD), which projects mixed-type features into orthogonal numeric components via indicator expansion.
+1. A post-hoc Random Forest importance screen simplified the feature set to 8 higher-signal variables: `rush_hour`, `hour_band`, `Sunrise_Sunset`, `Visibility(mi)`, `weather_group`, `Humidity(%)`, `Temperature(F)`, and `season`.
+2. These mixed-type variables were transformed with **Factor Analysis of Mixed Data (FAMD)** into orthogonal numeric components.
+3. A grid search over component count and cluster count selected **4 FAMD components with $k=4$**, which gave the strongest silhouette width.
+4. Final scenario labels were produced by **k-Means** on the 4-dimensional FAMD coordinates with `nstart = 25` and `iter.max = 100`.
 
-A grid search over 20 (ncomp × k) combinations evaluated silhouette width at each setting. Four components with k = 4 produced the best silhouette (0.4268); adding more components degraded separation monotonically. Figure 2 shows the silhouette curve for the FAMD pipeline — all candidates clear the threshold, with k = 4 as the clear optimum.
+This feature-importance step is used here as a model simplification aid and interpretive bridge. It is helpful, but it should not be treated as a completely independent external validation of the final clusters.
 
-![Figure 2: FAMD + k-Means silhouette width by k.](figures/c_silhouette_by_k.png)
+\begin{center}
+\includegraphics[width=0.76\linewidth]{figures/phase5b_famd_silhouette_plot.png}
+\end{center}
 
-*Figure 2: FAMD + k-Means silhouette width across candidate k values. All configurations exceed the 0.30 threshold; k = 4 achieves the maximum at 0.4268.*
+*Figure 2: FAMD + k-Means silhouette width across candidate cluster counts. All candidate values exceed the 0.30 threshold, with $k=4$ producing the highest score.*
 
-Final clustering used k-Means on the 4-dimensional FAMD coordinate matrix (nstart=25, iter.max=100). Figure 3 shows the biplot of the two leading FAMD dimensions coloured by cluster assignment — the four clusters separate clearly in this reduced space.
+\begin{center}
+\includegraphics[width=0.78\linewidth]{figures/phase5b_famd_biplot.png}
+\end{center}
 
-![Figure 3: FAMD biplot coloured by cluster assignment (k = 4).](figures/c_famd_biplot.png)
-
-*Figure 3: FAMD biplot (Dim 1 vs. Dim 2) coloured by cluster. The 68% concentration ellipses confirm meaningful geometric separation between all four archetypes.*
+*Figure 3: FAMD biplot (Dim 1 vs. Dim 2) coloured by cluster assignment. The four groups separate visibly in the reduced feature space, supporting the use of k-Means after dimensionality reduction.*
 
 #### Spatial Clustering: DBSCAN
 
-DBSCAN was applied to km-projected coordinates anchored at (40.8°N, 73.2°W). A 68-combination grid search over eps $\in$ [0.3, 2.0] km and minPts $\in$ {40, 50, 75, 100} selected eps = 1.0 km and minPts = 100.
+Spatial hotspots were estimated with **DBSCAN** on kilometer-projected coordinates anchored at $(40.8^\circ\text{N}, 73.2^\circ\text{W})$. A 68-combination grid search over `eps in [0.3, 2.0] km` and `minPts in {40, 50, 75, 100}` selected **eps = 1.0 km** and **minPts = 100**, yielding 12 non-noise hotspot clusters and a 15.3% noise fraction.
 
-### 2.2 Results
+DBSCAN was chosen for the spatial task because it does not force every point into a cluster and is better suited to irregularly shaped corridor-like concentrations than a centroid-based alternative.
+
+#### Integration and Post-Hoc Explanation
+
+After both clustering stages, `scenario_cluster` and `spatial_cluster` labels were joined back onto each accident. Clusters were then profiled by severity, county, weather, and time-of-day. A Random Forest trained on the final scenario labels provided permutation-importance summaries for post-hoc explanation of the discovered archetypes.
+
+### 2.3 Results
 
 #### Method Comparison
 
-| Method | k | Silhouette | Stability |
-|---|---|---|---|
-| k-Prototypes (Gower) | 3 | 0.1616 | 0.243 (Jaccard) |
-| **FAMD + k-Means** | **4** | **0.4268** | **0.997 (ARI)** |
+| Method | k | Silhouette | Stability summary | Selected |
+|---|---:|---:|---|---|
+| k-Prototypes (Gower) | 3 | 0.1616 | 0.243 (Jaccard) | No |
+| **FAMD + k-Means** | **4** | **0.4268** | **0.997 (ARI-based resampling)** | **Yes** |
 
-The FAMD pipeline improves silhouette by 165% and achieves near-perfect bootstrap reproducibility (ARI = 0.997 over 20 resamples), upgrading the quality gate from exploratory to acceptable. The improvement comes from three reinforcing factors: feature selection removes noise that Gower distance weights equally to informative features; FAMD concentrates discriminative variation into orthogonal dimensions; and k-Means in Euclidean space has stronger convergence guarantees than k-Prototypes.
+The enhanced FAMD pipeline improved the silhouette score by about **165%** relative to the baseline and produced a much more reproducible partition under the chosen resampling procedure. This is the solution retained for scenario interpretation.
 
 #### The Four Accident Archetypes
 
-| C | Name | Size | Sev4% | Night% | Wknd% | Dominant Conditions | Risk |
-|---|---|---|---|---|---|---|---|
-| 1 | Cloudy Off-Peak | 7,220 | 2.9 | 0 | 19 | Cloudy, Midday, 64°F, vis 9.9 mi | Baseline |
-| 2 | AM Rush | 16,754 | 1.8 | 13 | 10 | Cloudy, AM Rush, Junction-heavy | Low |
-| 3 | Rain AM Rush | 3,730 | 2.1 | 23 | 12 | Rain (51%), vis 3.1 mi | Baseline |
-| **4** | **Night / Early AM** | **5,524** | **6.1** | **97** | **29** | Cloudy, 53°F, vis 9.5 mi | **High** |
+| Cluster | Archetype | n | Sev4 % | Night % | Weekend % | Main signal | Risk |
+|---|---|---:|---:|---:|---:|---|---|
+| 1 | Cloudy Off-Peak | 7,220 | 2.89 | 0 | 19 | Cloudy midday | Baseline |
+| 2 | AM Rush | 16,754 | 1.75 | 13 | 10 | Rush-hour commuter pattern | Low |
+| 3 | Rain AM Rush | 3,730 | 2.06 | 23 | 12 | Rain and low visibility | Baseline |
+| 4 | Night / Early AM | 5,524 | 6.10 | 97 | 29 | Night / early-morning pattern | High |
 
-Figure 4 presents the cluster fingerprint heatmap — a standardised view of each archetype's feature profile. Cluster 4's night share (97%) and elevated Severity 4 rate (6.1%) stand out immediately against the other three.
+The resulting scenario clusters are large enough to be interpretable and distinct enough to support meaningful profiling. Cluster 2 contains roughly half of all accidents and captures the dominant commuter pattern. Cluster 4 is much smaller, but it is the most consequential from a severity-risk perspective.
 
-![Figure 4: Scenario cluster fingerprint heatmap.](figures/c_fingerprint_heatmap.png)
+\begin{center}
+\includegraphics[width=0.80\linewidth]{figures/phase9_cluster_fingerprint_heatmap.png}
+\end{center}
 
-*Figure 4: Standardised cluster fingerprints. Tile colour is scaled within each row. C4's night share (97%) and Severity 4 rate (6.1%) are the dominant signals.*
+*Figure 4: Standardized cluster fingerprint heatmap. Each row is scaled across clusters, making the dominant characteristics of each archetype easier to compare visually.*
 
-Cluster 4 is the primary risk signal: a 6.1% Severity 4 rate is 2.21× the dataset baseline of 2.76%. Nearly all accidents (97%) occur at night, and the 29% weekend share is the highest of any cluster, suggesting recreational late-night driving contributes disproportionately to severe outcomes.
+\begin{center}
+\includegraphics[width=0.68\linewidth]{figures/phase9_scenario_risk_bubble.png}
+\end{center}
 
-#### SHAP Feature Importance
+*Figure 5: Scenario risk bubble chart. Bubble size reflects cluster size and the vertical axis shows Severity 4 rate. Cluster 4 stands out as the clearest high-risk archetype.*
 
-Figure 5 shows global permutation importance from the Random Forest trained to predict cluster membership (OOB accuracy = 99.6%).
+The strongest risk signal is **Cluster 4 (Night / Early AM)**. Its Severity 4 rate is **6.10%**, which is **2.21×** the dataset baseline of **2.76%**. Nearly all accidents in this cluster occur at night, and it has the highest weekend share, making it a strong candidate for late-night safety interventions. By contrast, the **AM Rush** cluster has the lowest Severity 4 rate, suggesting that high-volume commuter crashes are common but individually less severe.
 
-![Figure 5: Global SHAP feature importance for cluster separation.](figures/c_shap_global.png)
+#### Severity Breakdown
 
-*Figure 5: Global permutation importance (500-tree Random Forest, OOB error = 0.005). rush_hour alone accounts for one-third of classification power.*
+| Group | Sev1 % | Sev2 % | Sev3 % | Sev4 % | Sev3+4 % |
+|---|---:|---:|---:|---:|---:|
+| Dataset baseline | 0.48 | 84.93 | 11.83 | 2.76 | 14.58 |
+| Cloudy Off-Peak | 0.17 | 86.69 | 10.25 | 2.89 | 13.14 |
+| AM Rush | 0.57 | 85.75 | 11.93 | 1.75 | 13.68 |
+| Rain AM Rush | 0.59 | 85.25 | 12.09 | 2.06 | 14.16 |
+| Night / Early AM | 0.54 | 79.96 | 13.40 | 6.10 | 19.50 |
+
+This table clarifies why Cluster 4 matters: it is not just slightly above baseline, but the only archetype where the combined **Severity 3 + 4** share rises to nearly **20%**. That makes it distinct from the other three clusters, which are all much closer to the overall distribution.
+
+#### Explainability Summary
+
+Figure 6 shows the global permutation importance from the Random Forest trained to predict cluster membership. This model is not the clustering method itself; it is an interpretation layer used to summarize which observed features most strongly distinguish the final scenario labels.
+
+\begin{center}
+\includegraphics[width=0.68\linewidth]{figures/phase8b_global_importance.png}
+\end{center}
+
+*Figure 6: Global permutation importance from a 500-tree Random Forest trained to predict cluster membership. Temporal variables dominate the ranking.*
 
 | Rank | Feature | Importance | Interpretation |
-|---|---|---|---|
-| 1 | rush_hour | 0.330 | Single strongest separator |
-| 2 | hour_band | 0.151 | Finer time-of-day resolution |
-| 3 | Sunrise_Sunset | 0.104 | Day vs. night — drives C4 |
-| 4 | Visibility(mi) | 0.098 | Separates rain (C3) from clear (C1) |
-| 5 | weather_group | 0.045 | Rain vs. Cloudy vs. Clear |
-| 6 | Humidity(%) | 0.021 | Moisture conditions |
-| 7 | Temperature(F) | 0.011 | Seasonal temperature signal |
-| 8 | season | 0.004 | Winter vs. summer baseline |
+|---|---|---:|---|
+| 1 | `rush_hour` | 0.330 | Strongest global separator |
+| 2 | `hour_band` | 0.151 | Finer time-of-day distinction |
+| 3 | `Sunrise_Sunset` | 0.104 | Separates day and night patterns |
+| 4 | `Visibility(mi)` | 0.098 | Distinguishes rainy / low-visibility conditions |
+| 5 | `weather_group` | 0.045 | Separates rain from non-rain scenarios |
 
-Figure 6 breaks this down per cluster, showing that each archetype is driven by a distinct feature profile — confirming the four groups are genuinely different in character rather than arbitrary partitions.
+Temporal variables dominate the final explanation layer. In practical terms, **when** a crash occurs is more important for scenario separation than weather alone, especially in distinguishing the AM-rush and night / early-morning archetypes.
 
-![Figure 6: Per-cluster SHAP feature importance (one-vs-rest).](figures/c_shap_per_cluster.png)
+\begin{center}
+\includegraphics[width=0.76\linewidth]{figures/phase8b_cluster_specific_importance.png}
+\end{center}
 
-*Figure 6: Per-cluster permutation importance. C2 is defined almost entirely by rush_hour; C3 by visibility and weather_group; C4 by Sunrise_Sunset alongside temporal features.*
+*Figure 7: Cluster-specific permutation importance. Different archetypes are distinguished by different feature combinations: AM Rush is dominated by temporal features, Rain AM Rush is tied more strongly to visibility and weather, and Night / Early AM is defined by day–night separation.*
 
-rush_hour alone accounts for one-third of the Random Forest's classification power. The top three features are all temporal — *when* you drive matters substantially more than what the weather is.
+#### Spatial Hotspots
 
-#### Spatial Hotspots (DBSCAN)
+\begin{center}
+\includegraphics[width=0.88\linewidth]{figures/phase7_spatial_hotspot_map.png}
+\end{center}
 
-Twelve corridor clusters were identified along Long Island's major east–west highways. Figure 7 shows the spatial distribution overlaid on Nassau and Suffolk county boundaries.
+*Figure 8: Spatial hotspot clusters from DBSCAN. The largest concentrations align with major Long Island travel corridors, while grey points are treated as noise by the density-based model.*
 
-![Figure 7: DBSCAN spatial hotspot clusters on Long Island.](figures/c_dbscan_map.png)
+The selected DBSCAN solution produced **12 non-noise hotspots** and **15.3% noise**. The largest hotspot groups align with the **Northern State Parkway**, **Southern State Parkway**, and **I-495 / Long Island Expressway**. When cross-tabulated with the scenario labels, the **AM Rush** archetype dominates **11 of 12** non-noise hotspots, indicating that corridor-level crash volume is primarily commuter-driven.
 
-*Figure 7: DBSCAN spatial clusters (eps = 1.0 km, minPts = 100). Twelve corridor clusters trace Long Island's major highways; 15.3% of points are noise (grey).*
+This combination of spatial and scenario clustering is one of the most useful outputs of the chapter. A pure spatial map alone shows where crashes happen, but it does not reveal whether those crashes are mostly commuter-related, weather-driven, or late-night high-risk events. The cross-tabulation makes the hotspot map more actionable.
 
-The three largest corridors are the Northern State Parkway (44.3% of corridor-assigned accidents), Southern State Parkway (33.2%), and I-495/LIE (3.3%). Cross-tabulation: the AM Rush archetype (C2) dominates 11 of 12 hotspot corridors, confirming that most corridor-level congestion is daytime commuter-driven rather than weather or nighttime events.
+#### Validation Summary
 
-#### Validation
+| Metric | Score | Threshold / note | Verdict |
+|---|---:|---|---|
+| Silhouette width | 0.4268 | $\geq 0.30$ | PASS |
+| ARI-based resampling score | 0.997 | Higher is more reproducible | Strong |
+| ARI standard deviation | 0.0013 | Lower is better | Stable |
+| RF classification accuracy | 99.6% | Post-hoc explanation model | Strong |
+| DBSCAN hotspot count | 12 | Target: 3–15 | PASS |
+| DBSCAN noise fraction | 15.3% | Target: 5–30% | PASS |
 
-| Metric | Score | Threshold | Verdict |
-|---|---|---|---|
-| Silhouette width | 0.4268 | $\geq$ 0.30 | PASS |
-| Bootstrap ARI (20 reps) | 0.997 | $\geq$ 0.65 | PASS |
-| ARI std. dev. | 0.0013 | — | Near-perfect |
-| RF classification accuracy | 99.6% | — | PASS |
-| DBSCAN corridor count | 12 | 3–15 | PASS |
-| DBSCAN noise fraction | 15.3% | 5–30% | PASS |
+Overall, the scenario solution is much better separated than the baseline and the spatial solution falls within the project’s target acceptance range. The scenario validation should still be read with care because the FAMD solution is summarized with an ARI-based reproducibility measure, which is not directly identical to the baseline Jaccard stability measure.
 
-### 2.3 Limitations
+### 2.4 Limitations
 
-- FAMD retains 39.8% of total variance. Additional components were tested and degrade silhouette, so this is a deliberate trade-off rather than information loss.
-- All results describe associations, not causal relationships.
-- Precipitation was excluded due to 20.1% missingness, removing a potentially important weather signal.
-- With Severity 2 comprising 85% of records, subtle differences among severe accident types may be masked.
-- DBSCAN corridor labels are heuristic and were not validated against authoritative highway shapefiles.
+- **Feature simplification is partly post-hoc.** The Random Forest importance ranking used to simplify the FAMD feature set is helpful for interpretation, but it is not an independent external validation.
+- **FAMD retains 39.8% of total variance.** This was a deliberate trade-off for clearer cluster separation, but it still means some within-cluster variation is compressed.
+- **Stability metrics are not perfectly comparable across methods.** The baseline uses Jaccard stability, while the final FAMD solution is summarized using ARI-based resampling reproducibility.
+- **Spatial corridor labels are heuristic.** They are based on cluster location and shape, not on formal highway shapefile matching.
+- **Precipitation was excluded.** Because 20.1% of precipitation values were missing, an important weather signal was not used in clustering.
+- **The analysis is observational.** The clusters describe structure in the data; they do not establish causal mechanisms.
+
+### 2.5 Conclusion
+
+The final clustering workflow identifies **four scenario archetypes** and **twelve spatial hotspots** on Long Island. The clearest policy-relevant finding is the **Night / Early AM** archetype, which has more than double the baseline Severity 4 rate. At the same time, the **AM Rush** archetype dominates most high-volume hotspot corridors, showing that everyday commuter crashes drive much of the system-wide burden.
+
+Taken together, the scenario and spatial tracks provide a fuller picture of both **what kinds of crashes occur** and **where they concentrate**. That makes the clustering analysis a useful descriptive framework for targeted traffic-safety interventions, especially when the goal is to focus limited resources on the highest-risk times and places rather than on system-wide averages alone.
 
 ---
 
@@ -259,11 +321,11 @@ Crossing, Junction, and Traffic_Signal rank among the top seven XGBoost features
 
 This gives Nassau County DOT, Suffolk County DPW, and NYC DOT (Queens) a way to prioritise safety capital budgets beyond simple crash-count rankings. Weighting candidate sites by predicted severity risk produces a different and more consequential ordering. Practical interventions at flagged locations could include signal timing adjustments during identified peak-risk windows, advanced warning signage approaching high-gain junctions, turn lane additions and pedestrian refuge islands at high-risk crossings, and retroreflective markings calibrated to low-visibility conditions.
 
-The DBSCAN spatial results (Figure 7) sharpen the geographic targeting. The AM Rush archetype (C2) dominates 11 of 12 corridor clusters and accounts for 50% of all accidents by volume. Even at a low individual severity rate (1.8% Severity 4), the volume makes this the costliest cluster in aggregate. Congestion management and junction redesign at the densest Northern/Southern State Parkway segments would reduce the largest source of daily traffic disruption on Long Island.
+The DBSCAN spatial results shown in the hotspot map sharpen the geographic targeting. The AM Rush archetype (C2) dominates 11 of 12 corridor clusters and accounts for 50% of all accidents by volume. Even at a low individual severity rate (1.8% Severity 4), the volume makes this the costliest cluster in aggregate. Congestion management and junction redesign at the densest Northern/Southern State Parkway segments would reduce the largest source of daily traffic disruption on Long Island.
 
 ### 4.2 Safety Campaigns
 
-The clustering analysis identifies Cluster 4 (Night / Early AM) as the clearest public safety target: 17% of all accidents but a 6.1% Severity 4 rate — 2.21× the baseline. The 29% weekend share suggests recreational late-night driving contributes disproportionately to the most dangerous outcomes (see Figure 4).
+The clustering analysis identifies Cluster 4 (Night / Early AM) as the clearest public safety target: 17% of all accidents but a 6.1% Severity 4 rate — 2.21× the baseline. The 29% weekend share suggests recreational late-night driving contributes disproportionately to the most dangerous outcomes, which is also visible in the scenario risk profile.
 
 Key campaign directions:
 
@@ -284,7 +346,7 @@ At the default 0.5 threshold, XGBoost achieves 0.60 recall with 0.27 precision �
 
 ## 5. Conclusion
 
-The clustering analysis elevated scenario clustering from exploratory (silhouette 0.16, Jaccard 0.24) to acceptable (silhouette 0.43, ARI = 0.997) by combining SHAP-guided feature selection with FAMD dimensionality reduction. Four accident archetypes were identified. The Night/Early AM cluster carries a Severity 4 rate of 6.1% — more than double the dataset baseline — and is the strongest risk signal in the data. DBSCAN confirmed 12 spatial corridor clusters, with the AM Rush archetype dominating 11 of them. The central finding is that *when* you drive is the dominant risk factor on Long Island.
+The clustering analysis elevated scenario clustering from exploratory (silhouette 0.16, Jaccard 0.24) to acceptable (silhouette 0.43, ARI = 0.997) by combining feature simplification with FAMD dimensionality reduction. Four accident archetypes were identified. The Night / Early AM cluster carries a Severity 4 rate of 6.1% — more than double the dataset baseline — and is the strongest risk signal in the data. DBSCAN confirmed 12 spatial hotspot clusters, with the AM Rush archetype dominating 11 of them. The central finding is that *when* you drive is the dominant risk factor on Long Island.
 
 The severity prediction analysis showed that XGBoost (AUC = 0.718) meaningfully outperforms Logistic Regression (AUC = 0.616), with the gap driven by non-linear interactions involving wind speed, infrastructure type, and time-of-day. Infrastructure features (Crossing, Junction, Traffic_Signal) rank consistently among the top predictors, and the rush_x_junction interaction confirms that junction risk concentrates during peak hours. Cross-validation results are stable and consistent with test performance throughout.
 
