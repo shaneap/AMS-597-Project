@@ -1,0 +1,89 @@
+---
+title: "Regression Analysis"
+author: "Matt Tranquada"
+date: "2026-04-20"
+output: pdf_document
+---
+
+# Library Imports
+
+```{r}
+library(caret)
+library(nnet)
+library(glmnet)
+library(data.table)
+```
+
+# Data Loading
+
+```{r}
+d <- data.table::fread('./data/US_Accidents_March23.csv')
+```
+
+# Data Processing
+
+```{r}
+d$Severity <- as.factor(d$Severity)
+d$Amenity <- as.factor(d$Amenity)
+d$Bump <- as.factor(d$Bump)
+d$Crossing <- as.factor(d$Crossing)
+d$Give_Way <- as.factor(d$Give_Way)
+d$Junction <- as.factor(d$Junction)
+d$No_Exit <- as.factor(d$No_Exit)
+d$Railway <- as.factor(d$Railway)
+d$Roundabout <- as.factor(d$Roundabout)
+d$Station <- as.factor(d$Station)
+d$Stop <- as.factor(d$Stop)
+d$Traffic_Calming <- as.factor(d$Traffic_Calming)
+d$Traffic_Signal <- as.factor(d$Traffic_Signal)
+d$Turning_Loop <- as.factor(d$Turning_Loop)
+d$Sunrise_Sunset <- as.factor(d$Sunrise_Sunset)
+
+d$Precipitation.in.[is.na(d$Precipitation.in.)] <- 0 # impute 0 for NA
+d$Wind_Speed.mph.[is.na(d$Wind_Speed.mph.)] <- 0 # impute 0 for NA
+
+head(d)
+
+summary(d)
+# Turning_Loop all false -> drop
+```
+
+```{r}
+cols <- c('Severity','Distance(mi)','Temperature(F)','Humidity(%)','Pressure(in)','Visibility(mi)','Wind_Speed(mph)','Precipitation(in)','Amenity','Bump','Crossing','Give_Way','Junction','No_Exit','Railway','Roundabout','Station','Stop','Traffic_Calming','Traffic_Signal','Sunrise_Sunset')
+
+d.clean <- subset(d, select = cols) # Select only columns for modeling
+d.clean <- na.omit(d.clean) # Drop rows with missing observations
+
+summary(d.clean)
+
+# Create the training and testing datasets
+set.seed(123)
+index <- createDataPartition(d.clean$`Distance(mi)`,p=0.75,list=FALSE)
+train.data <- d.clean[index,]
+test.data <- d.clean[-index,]
+```
+
+# MLR Modeling
+
+```{r}
+model <- lm(`Distance(mi)` ~ ., data = train.data)
+summary(model)
+
+pred <- predict(model, newdata = test.data)
+RMSE(pred,test.data$`Distance(mi)`)
+```
+
+# LASSO regression modeling
+
+```{r}
+x <- model.matrix(`Distance(mi)` ~ ., data = train.data)[, -1] 
+y <- train.data$`Distance(mi)`
+
+cv_model <- cv.glmnet(x, y, alpha = 1)
+best_lambda <- cv_model$lambda.min  # Lambda for lowest MSE
+
+final_model <- glmnet(x, y, alpha = 1, lambda = best_lambda)
+coef(final_model)
+
+```
+
