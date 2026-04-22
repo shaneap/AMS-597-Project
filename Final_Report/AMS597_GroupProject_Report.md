@@ -263,43 +263,53 @@ Data were split 80/20 with stratification on the outcome. All preprocessing (sca
 | Logistic Regression | 0.6165 | 0.5846 | 0.2955 |
 | **XGBoost** | **0.7185** | **0.7040** | **0.3706** |
 
-Figure 8 shows the ROC curves on the held-out test set. XGBoost dominates across the full threshold range; both models sit well above the random-classifier diagonal.
+Figure 9 shows the ROC curves on the held-out test set. XGBoost dominates across the full threshold range; both models sit well above the random-classifier diagonal.
 
-![Figure 8: ROC curves — XGBoost vs. Logistic Regression.](figures/x_roc_curves.png)
+\begin{center}
+\includegraphics[width=0.80\linewidth]{figures/x_roc_curves.png}
+\end{center}
 
-*Figure 8: ROC curves on the held-out test set. XGBoost AUC = 0.718; Logistic Regression AUC = 0.616.*
+*Figure 9: ROC curves on the held-out test set. XGBoost AUC = 0.718; Logistic Regression AUC = 0.616.*
 
 XGBoost outperforms across all three metrics. The 0.102 AUC gap points to non-linear structure that a linear model cannot fully represent even with engineered interaction terms. Accuracy is not the headline metric: a model that always predicted low-severity would hit ~85% accuracy while achieving AUC = 0.50.
 
-Figure 9 shows the confusion matrices. Both models flag the same 579 true high-severity crashes, but XGBoost cuts false positives from 2,371 to 1,577 — a 34% reduction that accounts for most of the accuracy and F1 improvement.
+Figure 10 shows the confusion matrices. Both models flag the same 579 true high-severity crashes, but XGBoost cuts false positives from 2,371 to 1,577 — a 34% reduction that accounts for most of the accuracy and F1 improvement.
 
-![Figure 9: Confusion matrices on the held-out test set.](figures/x_confusion_matrices.png)
+\begin{center}
+\includegraphics[width=0.88\linewidth]{figures/x_confusion_matrices.png}
+\end{center}
 
-*Figure 9: Confusion matrices (n = 6,646). Both models catch 579 true high-severity crashes; XGBoost generates 794 fewer false positives.*
+*Figure 10: Confusion matrices (n = 6,646). Both models catch 579 true high-severity crashes; XGBoost generates 794 fewer false positives.*
 
 #### Precision-Recall Analysis
 
-Figure 10 shows the PR curves. Unlike ROC, the PR curve ignores true negatives entirely, making it a more conservative read of performance under class imbalance. Both models clear the random baseline (AP $\approx$ 0.15); XGBoost's advantage is most pronounced in the 0.0–0.4 recall range.
+Figure 11 shows the PR curves. Unlike ROC, the PR curve ignores true negatives entirely, making it a more conservative read of performance under class imbalance. Both models clear the random baseline (AP $\approx$ 0.15); XGBoost's advantage is most pronounced in the 0.0–0.4 recall range.
 
-![Figure 10: Precision-Recall curves.](figures/x_pr_curve.png)
+\begin{center}
+\includegraphics[width=0.80\linewidth]{figures/x_pr_curve.png}
+\end{center}
 
-*Figure 10: Precision-Recall curves. XGBoost AP = 0.327; Logistic Regression AP = 0.213; random baseline AP $\approx$ 0.15.*
+*Figure 11: Precision-Recall curves. XGBoost AP = 0.327; Logistic Regression AP = 0.213; random baseline AP $\approx$ 0.15.*
 
 #### Feature Importance
 
-Figure 11 shows the top-15 XGBoost features by mean gain. Wind Speed leads at 0.085, followed closely by Crossing and Junction. Both engineered interaction terms land in the top ten, confirming they carry signal beyond their constituent features.
+Figure 12 shows the top-15 XGBoost features by mean gain. Wind Speed leads at 0.085, followed closely by Crossing and Junction. Both engineered interaction terms land in the top ten, confirming they carry signal beyond their constituent features.
 
-![Figure 11: XGBoost feature importance by mean gain (top 15).](figures/x_feature_importance.png)
+\begin{center}
+\includegraphics[width=0.80\linewidth]{figures/x_feature_importance.png}
+\end{center}
 
-*Figure 11: Top-15 XGBoost features by mean gain. Infrastructure features (Crossing, Junction, Traffic_Signal) and temporal encodings dominate alongside Wind Speed.*
+*Figure 12: Top-15 XGBoost features by mean gain. Infrastructure features (Crossing, Junction, Traffic_Signal) and temporal encodings dominate alongside Wind Speed.*
 
 #### Cross-Validation Stability
 
-Figure 12 shows 5-fold CV AUC with error bars. CV results track test performance closely — LR at 0.6129 (±0.0059) vs. test 0.6165, XGBoost at 0.7164 (±0.0042) vs. test 0.7185 — confirming stable, generalisable models.
+Figure 13 shows 5-fold CV AUC with error bars. CV results track test performance closely — LR at 0.6129 (±0.0059) vs. test 0.6165, XGBoost at 0.7164 (±0.0042) vs. test 0.7185 — confirming stable, generalisable models.
 
-![Figure 12: 5-fold cross-validation AUC comparison.](figures/x_cv_auc.png)
+\begin{center}
+\includegraphics[width=0.80\linewidth]{figures/x_cv_auc.png}
+\end{center}
 
-*Figure 12: 5-fold CV ROC-AUC with ±1 SD error bars. Tight standard deviations and close agreement with test-set results indicate neither model is overfitting.*
+*Figure 13: 5-fold CV ROC-AUC with ±1 SD error bars. Tight standard deviations and close agreement with test-set results indicate neither model is overfitting.*
 
 ### 3.4 Limitations
 
@@ -340,7 +350,7 @@ All XGBoost inputs — wind speed, hour, month, infrastructure type, weather con
 
 This is more specific than a generic weather advisory because it accounts for infrastructure context. A driver approaching a signalised crossing during evening rush under high-wind conditions lands well above average predicted severity — a trigger that a "fog advisory" would miss entirely if fog is absent.
 
-At the default 0.5 threshold, XGBoost achieves 0.60 recall with 0.27 precision — roughly one in four alerts corresponds to a genuinely high-severity situation. For a driver advisory system that's a reasonable operating point, and it can be shifted along the PR curve (Figure 10) depending on how conservative the deployment needs to be. The clustering model adds a complementary layer: Sunrise_Sunset and rush_hour features can trigger time-specific alert modes (e.g., heightened sensitivity after 10 PM on weekends) even before conditions deteriorate.
+At the default 0.5 threshold, XGBoost achieves 0.60 recall with 0.27 precision — roughly one in four alerts corresponds to a genuinely high-severity situation. For a driver advisory system that's a reasonable operating point, and it can be shifted along the PR curve (Figure 11) depending on how conservative the deployment needs to be. The clustering model adds a complementary layer: Sunrise_Sunset and rush_hour features can trigger time-specific alert modes (e.g., heightened sensitivity after 10 PM on weekends) even before conditions deteriorate.
 
 ---
 
